@@ -103,6 +103,7 @@ function convertToFullYearMonth(period: string): string {
 const SPRINT_PREFIX_MAP: Record<string, string> = {
   AUTOWAY: 'GW',
   HMGBOARD: 'HB',
+  MEMBERSHIP: 'HM',
 };
 
 /**
