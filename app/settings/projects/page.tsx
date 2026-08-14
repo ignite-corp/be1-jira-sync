@@ -10,6 +10,13 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Plus, Pencil, Trash2, Check, Loader2, Search, CircleCheck, CircleX } from 'lucide-react';
 import { toast } from 'sonner';
 import { db } from '@/lib/db';
@@ -37,6 +44,12 @@ interface VerifyResult {
   boardId: number | null;
 }
 
+interface Board {
+  id: number;
+  name: string;
+  type?: string;
+}
+
 interface FormState {
   jiraProjectKey: string;
   jiraInstance: 'ignite' | 'hmg';
@@ -62,6 +75,8 @@ export default function ProjectsPage() {
   const [verifying, setVerifying] = useState(false);
   const [verified, setVerified] = useState<VerifyResult | null>(null);
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [boards, setBoards] = useState<Board[]>([]);
+  const [loadingBoards, setLoadingBoards] = useState(false);
 
   const fetchData = useCallback(async () => {
     const [teamsRes, projectsRes, ptRes] = await Promise.all([
@@ -103,6 +118,30 @@ export default function ProjectsPage() {
     if (field === 'jiraProjectKey' || field === 'jiraInstance') {
       setVerified(null);
       setVerifyError(null);
+      setBoards([]);
+    }
+  };
+
+  /** 프로젝트에 연결된 보드 목록 조회 (실패해도 빈 배열 — 보드는 필수가 아님) */
+  const fetchBoards = async (
+    projectKey: string,
+    instance: 'ignite' | 'hmg'
+  ): Promise<Board[]> => {
+    try {
+      const res = await jiraFetch(
+        `/api/jira/${instance}/agile/1.0/board?projectKeyOrId=${projectKey}&maxResults=50`
+      );
+      const result = await res.json();
+      if (!result.success || !Array.isArray(result.data?.values)) return [];
+      return result.data.values.map(
+        (b: { id: number; name: string; type?: string }) => ({
+          id: b.id,
+          name: b.name,
+          type: b.type,
+        })
+      );
+    } catch {
+      return [];
     }
   };
 
@@ -116,6 +155,7 @@ export default function ProjectsPage() {
     setVerifying(true);
     setVerified(null);
     setVerifyError(null);
+    setBoards([]);
 
     try {
       const res = await jiraFetch(
@@ -124,19 +164,10 @@ export default function ProjectsPage() {
       const result = await res.json();
 
       if (result.success && result.data) {
-        // Board ID 조회 (Agile API)
-        let boardId: number | null = null;
-        try {
-          const boardRes = await jiraFetch(
-            `/api/jira/${form.jiraInstance}/agile/1.0/board?projectKeyOrId=${projectKey}`
-          );
-          const boardResult = await boardRes.json();
-          if (boardResult.success && boardResult.data?.values?.length > 0) {
-            boardId = boardResult.data.values[0].id;
-          }
-        } catch {
-          // Board ID 조회 실패는 무시 (필수가 아님)
-        }
+        // 보드 목록 조회 (Agile API) — 여러 개면 사용자가 선택, 기본값은 첫 번째
+        const boardList = await fetchBoards(projectKey, form.jiraInstance);
+        setBoards(boardList);
+        const boardId = boardList.length > 0 ? boardList[0].id : null;
 
         const v: VerifyResult = {
           key: result.data.key,
@@ -146,7 +177,9 @@ export default function ProjectsPage() {
         };
         setVerified(v);
         setForm((prev) => ({ ...prev, name: v.key }));
-        const boardInfo = boardId ? `, Board: ${boardId}` : '';
+        const boardInfo = boardId
+          ? `, Board: ${boardId}${boardList.length > 1 ? ` (총 ${boardList.length}개)` : ''}`
+          : '';
         toast.success(`프로젝트 확인: ${v.key} (ID: ${v.id}${boardInfo}) - ${v.name}`);
       } else {
         setVerifyError(
@@ -179,6 +212,7 @@ export default function ProjectsPage() {
     setEditingId(null);
     setVerified(null);
     setVerifyError(null);
+    setBoards([]);
   };
 
   const handleAdd = async () => {
@@ -239,6 +273,13 @@ export default function ProjectsPage() {
     setVerified({ key: project.name, id: project.jiraProjectId, name: project.name, boardId: project.boardId });
     setVerifyError(null);
     setIsAdding(false);
+
+    // 저장된 보드 외 다른 보드로 바꿀 수 있도록 목록을 불러온다
+    setBoards([]);
+    setLoadingBoards(true);
+    fetchBoards(project.jiraProjectKey, project.jiraInstance)
+      .then(setBoards)
+      .finally(() => setLoadingBoards(false));
   };
 
   const handleEditSave = async () => {
@@ -306,8 +347,15 @@ export default function ProjectsPage() {
   const handleResetVerify = () => {
     setVerified(null);
     setVerifyError(null);
+    setBoards([]);
     setForm((prev) => ({ ...prev, name: '', jiraProjectKey: '' }));
   };
+
+  // 저장된 board_id 가 목록에 없더라도(보드 삭제/권한 변경) 선택 상태로 보이게 유지
+  const boardOptions: Board[] =
+    verified?.boardId && !boards.some((b) => b.id === verified.boardId)
+      ? [...boards, { id: verified.boardId, name: '(저장된 보드)' }]
+      : boards;
 
   const formUI = (
     <div className="border rounded-lg p-4 space-y-3 bg-muted/30">
@@ -419,6 +467,55 @@ export default function ProjectsPage() {
       {/* 검증 성공 후 나머지 필드 */}
       {verified && (
         <>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">
+              보드
+              <span className="text-muted-foreground font-normal ml-1">
+                (스프린트 조회에 사용)
+              </span>
+            </label>
+            {loadingBoards ? (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                보드 목록을 불러오는 중...
+              </div>
+            ) : boardOptions.length > 0 ? (
+              <Select
+                value={verified.boardId ? String(verified.boardId) : ''}
+                onValueChange={(value) =>
+                  setVerified((prev) =>
+                    prev ? { ...prev, boardId: Number(value) } : prev
+                  )
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="보드 선택..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {boardOptions.map((board) => (
+                    <SelectItem key={board.id} value={String(board.id)}>
+                      <span className="flex items-center gap-1.5">
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {board.id}
+                        </span>
+                        {board.name}
+                        {board.type && (
+                          <span className="text-[10px] text-muted-foreground">
+                            ({board.type})
+                          </span>
+                        )}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                연결된 보드가 없습니다.
+                {verified.boardId ? ` (저장된 Board: ${verified.boardId})` : ''}
+              </p>
+            )}
+          </div>
           <div className="space-y-1">
             <label className="text-xs font-medium">
               소속 팀 <span className="text-destructive">*</span>
