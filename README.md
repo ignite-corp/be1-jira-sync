@@ -1,6 +1,7 @@
 # Jira 통합 관리 도구
 
-> 원본 레포: https://github.com/Ignite-FEDev1/jira-sync
+> 레포: https://github.com/ignite-corp/be1-jira-sync
+> (원본: https://github.com/Ignite-FEDev1/jira-sync)
 
 Jira 자동화 및 통합 관리 도구입니다.
 
@@ -9,8 +10,8 @@ Jira 자동화 및 통합 관리 도구입니다.
 ### 1. 프로젝트 클론
 
 ```bash
-git clone https://github.com/Ignite-FEDev1/jira-sync.git
-cd fe1-web
+git clone https://github.com/ignite-corp/be1-jira-sync.git
+cd be1-jira-sync
 ```
 
 ### 2. 의존성 설치
@@ -83,7 +84,7 @@ http://localhost:7591
 ## 📁 프로젝트 구조
 
 ```
-fe1-web/
+be1-jira-sync/
 ├── app/                    # Next.js App Router
 │   ├── api/               # API Routes (Jira 프록시)
 │   ├── create-ticket/     # 티켓 생성 페이지
