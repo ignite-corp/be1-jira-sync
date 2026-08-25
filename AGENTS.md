@@ -11,7 +11,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `NEXT_PUBLIC_DB_URL=https://placeholder.supabase.co NEXT_PUBLIC_DB_ANON_KEY=x npm run build`
 - 필요한 환경변수 목록은 `.env.example` 참고. **README 는 다른 저장소(FE 팀 원본) 기준이라 근거로 쓰지 말 것.**
 - 타입체크는 `./node_modules/.bin/tsc --noEmit` (`npx tsc` 는 엉뚱한 패키지를 받는다).
-- 스크립트 실행 관례는 `npx tsx scripts/<name>.ts` (`.github/workflows/daily-sync.yml` 참고).
+- 스크립트 실행 관례는 `npx tsx scripts/<name>.ts` (`scripts/` 각 파일 상단 주석 참고).
 
 ## 구조에서 놓치기 쉬운 것
 
@@ -30,7 +30,6 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   - 판정 로직은 `lib/services/sync/link-resolver.ts` 에 순수 함수로 모여 있다.
 - 스프린트 이름은 `<접두사> YYYYMM` (예: `BEDEV1 202608`, `AUTOWAY` → `GW 202608`).
   접두사 예외는 `lib/services/sync/sprint-mapper.ts` 의 `SPRINT_PREFIX_MAP`.
-- `.github/workflows/daily-sync.yml` 은 현재 사용하지 않는다.
 
 ## 커밋
 

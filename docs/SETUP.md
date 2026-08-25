@@ -23,7 +23,7 @@ npm run dev
 | `HMG_JIRA_EMAIL` | 2번째 Jira 인스턴스 이메일 (배치 전용) | △ |
 | `HMG_JIRA_API_TOKEN` | 2번째 Jira 인스턴스 토큰 (배치 전용) | △ |
 
-> 배치(`daily-sync`)를 사용하지 않으면 Jira 환경변수는 불필요합니다.
+> `scripts/` 의 배치 스크립트를 사용하지 않으면 Jira 환경변수는 불필요합니다.
 > 브라우저에서는 사용자별로 DB에 저장된 인증 정보를 사용합니다.
 
 ---
@@ -41,8 +41,6 @@ npm run dev
 | `lib/services/sync/db-field-mapper.ts` | DB 기반 필드 매핑 변환 | 필드 변환 방식 변경 시 |
 | `lib/services/sync/transition-helper.ts` | 상태 전이 (BFS 최단경로) | 워크플로우 전이 로직 변경 시 |
 | `proxy.ts` | IP 접근 제한 | 허용 IP 대역 변경 시 |
-| `scripts/daily-sync.ts` | 일일 배치 동기화 스크립트 | 배치 로직 변경 시 |
-| `.github/workflows/daily-sync.yml` | 배치 스케줄 (GitHub Actions) | 실행 주기 변경 시 |
 | `db/supabase-init.sql` | DB 테이블 초기화 스크립트 | DB 스키마 확인/변경 시 |
 
 ---
@@ -99,11 +97,7 @@ npm run dev
 ├── contexts/
 │   └── user-context.tsx          # 현재 사용자 Context
 │
-├── proxy.ts                      # Next.js Proxy (IP 접근 제한)
-├── scripts/
-│   └── daily-sync.ts             # 일일 배치 동기화 스크립트
-└── .github/workflows/
-    └── daily-sync.yml            # GitHub Actions 배치 스케줄
+└── proxy.ts                      # Next.js Proxy (IP 접근 제한)
 ```
 
 ---
@@ -202,16 +196,7 @@ const ALLOWED_CIDRS = [
 
 제한을 해제하려면 `DISABLE_IP_RESTRICTION=true` 환경변수를 설정하거나 `proxy.ts`를 삭제합니다.
 
-### 7. 배치 스케줄을 변경하고 싶을 때
-
-**수정 파일:** `.github/workflows/daily-sync.yml`
-
-```yaml
-schedule:
-  - cron: '0 23 * * 0-4'  # UTC 기준 - 원하는 시간으로 변경
-```
-
-### 8. 사용자 인증 방식을 변경하고 싶을 때
+### 7. 사용자 인증 방식을 변경하고 싶을 때
 
 현재 사용자별 Jira API Key를 DB에 저장하고, API 호출 시 서버에서 조회합니다.
 
