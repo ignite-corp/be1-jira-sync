@@ -145,6 +145,7 @@ export class BidirectionalOrchestrator {
   ): Promise<BidirectionalPlan> {
     initSprintCache();
     this.missingStatusMapping.clear();
+    this.warnedMapping.clear();
 
     const now = options.now ?? new Date();
 
@@ -408,10 +409,20 @@ export class BidirectionalOrchestrator {
     profile: SyncProfileInfo
   ): Promise<TicketComparison> {
     const mappings = await getFieldMappings(profileId);
+    // 이름으로 해석하지 못해 빠진 값(스프린트/버전)을 로그로 드러낸다.
+    // 경고를 안 받으면 매핑에서 조용히 빠진 값이 "대상에만 값이 있음" 으로 보여
+    // 고칠 방법 없는 diff 가 계속 뜬다.
     const mappedSourceFields = await mapFieldsFromDb(
       sourceTicket,
       profileId,
-      profile.targetProjectKey
+      profile.targetProjectKey,
+      {
+        onWarning: (message) => {
+          if (this.warnedMapping.has(message)) return;
+          this.warnedMapping.add(message);
+          this.logger.warning(`${sourceTicket.key}: ${message}`);
+        },
+      }
     );
 
     // 상태는 sync_profile_status_mappings 로 따로 관리된다.
@@ -439,6 +450,9 @@ export class BidirectionalOrchestrator {
 
   /** 상태 매핑이 없어 비교에서 뺀 소스 상태 id (경고를 한 번만 내기 위해 모은다) */
   private missingStatusMapping = new Set<string>();
+
+  /** 같은 매핑 경고를 티켓마다 반복해 찍지 않기 위한 중복 제거 */
+  private warnedMapping = new Set<string>();
 
   /**
    * 소스 티켓에 연결된 대상 티켓 키 목록 (결정 1 의 규칙 그대로)

@@ -3,7 +3,7 @@
 
 import { JiraIssue } from '@/lib/types/jira';
 import { dbServer } from '@/lib/db';
-import { mapSprintToTarget } from './sprint-mapper';
+import { mapSprintToTarget, pickSprint } from './sprint-mapper';
 import { JiraClient } from '@/lib/services/jira/client';
 
 export interface DbFieldMapping {
@@ -291,14 +291,19 @@ export async function mapFieldsFromDb(
 
       case 'sprint_map': {
         // 스프린트 매핑 (FEHG 스프린트 이름 → 대상 프로젝트 스프린트 ID)
-        const sprint = fehgFields[source_field] as
-          | Array<{ id: number; name: string }>
-          | undefined;
+        //
+        // 티켓이 여러 스프린트에 속해 있을 수 있어 pickSprint 로 active 를 우선 고른다.
+        // (배열 첫 번째를 쓰면 닫힌 지난 스프린트가 잡혀 대상에서 이름을 못 찾는다)
+        const sprint = pickSprint(
+          fehgFields[source_field] as
+            | Array<{ id: number; name: string; state?: string }>
+            | undefined
+        );
 
-        if (sprint && sprint.length > 0) {
+        if (sprint?.name) {
           const sprintInstance = isHmgTarget ? 'hmg' : 'ignite';
           const mappedSprintId = await mapSprintToTarget(
-            sprint[0].name,
+            sprint.name,
             targetProjectKey,
             sprintInstance
           );
@@ -306,7 +311,7 @@ export async function mapFieldsFromDb(
             fields[target_field] = mappedSprintId;
           } else {
             onWarning?.(
-              `스프린트 "${sprint[0].name}" 에 대응하는 ${targetProjectKey} 스프린트가 없어 반영하지 못했습니다`
+              `스프린트 "${sprint.name}" 에 대응하는 ${targetProjectKey} 스프린트가 없어 반영하지 못했습니다`
             );
           }
         }
