@@ -154,6 +154,25 @@ export function currentMonthSprintName(projectKey: string, now: Date = new Date(
 }
 
 /**
+ * 스프린트 필드(배열)에서 기준 스프린트 하나를 고른다.
+ *
+ * 티켓은 여러 스프린트에 속할 수 있고 배열 순서는 보장되지 않는다.
+ * (예: BEDEV1-176 = [202608(closed), 202609(active), 202606(closed)])
+ * `[0]` 을 쓰면 닫힌 지난 스프린트가 잡혀 대상에서 이름을 못 찾는다 —
+ * 대상 보드 조회는 state=active,future 라 닫힌 스프린트가 없다.
+ * 그래서 **active 우선, 없으면 첫 번째** 로 고른다.
+ * field-canonicalizer 의 canonicalizeSprint 와 같은 규칙이어야 한다.
+ * (규칙이 다르면 비교가 매퍼가 쓰지 않는 값을 보고 거짓 diff 를 낸다)
+ */
+export function pickSprint(
+  sprints: Array<{ id: number; name: string; state?: string }> | undefined | null
+): { id: number; name: string } | null {
+  if (!Array.isArray(sprints) || sprints.length === 0) return null;
+  const active = sprints.find((s) => s?.state === 'active');
+  return active ?? sprints[0];
+}
+
+/**
  * FEHG 스프린트를 대상 프로젝트 스프린트로 매핑
  * Ignite(KQ/HDD/HB) 및 HMG(AUTOWAY/HMGBOARD 등) 모두 지원
  */

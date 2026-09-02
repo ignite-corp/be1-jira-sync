@@ -8,7 +8,7 @@ import {
   JIRA_ENDPOINTS,
 } from '@/lib/constants/jira';
 import { SyncTargetProject, SyncOptions } from './types';
-import { mapSprintToTarget } from './sprint-mapper';
+import { mapSprintToTarget, pickSprint } from './sprint-mapper';
 
 /**
  * FEHG 티켓 필드를 대상 프로젝트용으로 변환
@@ -47,12 +47,14 @@ export async function mapFieldsForIgniteProject(
   }
 
   // 스프린트 매핑
-  const fehgSprint = fehgFields[IGNITE_CUSTOM_FIELDS.SPRINT] as
-    | Array<{ id: number; name: string }>
-    | undefined;
+  const fehgSprint = pickSprint(
+    fehgFields[IGNITE_CUSTOM_FIELDS.SPRINT] as
+      | Array<{ id: number; name: string; state?: string }>
+      | undefined
+  );
 
-  if (fehgSprint && fehgSprint.length > 0) {
-    const fehgSprintName = fehgSprint[0].name;
+  if (fehgSprint?.name) {
+    const fehgSprintName = fehgSprint.name;
     const mappedSprintId = await mapSprintToTarget(
       fehgSprintName,
       targetProject

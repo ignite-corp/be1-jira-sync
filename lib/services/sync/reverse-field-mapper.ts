@@ -12,7 +12,7 @@
 //   - description: 대상 인스턴스의 media 노드 제거 (소스에서는 유효하지 않은 id 라 업로드가 깨진다)
 
 import { JiraIssue } from '@/lib/types/jira';
-import { mapSprintToTarget } from './sprint-mapper';
+import { mapSprintToTarget, pickSprint } from './sprint-mapper';
 import {
   getFieldMappings,
   getSyncProfileInfo,
@@ -139,11 +139,3 @@ export async function mapFieldsToSource(
   return fields;
 }
 
-/** 배열이면 active 우선, 없으면 첫 번째 (canonicalizeSprint 와 같은 규칙) */
-function pickSprint(
-  sprints: Array<{ id: number; name: string; state?: string }> | undefined
-): { id: number; name: string } | null {
-  if (!Array.isArray(sprints) || sprints.length === 0) return null;
-  const active = sprints.find((s) => s?.state === 'active');
-  return active ?? sprints[0];
-}

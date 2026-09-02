@@ -91,15 +91,6 @@ export class BaseJiraService {
         new Set([...JIRA_CONFIG.DEFAULT_FIELDS, ...(extraFields ?? [])])
       ).join(',');
 
-      // 필드 목록 출력 (디버깅용)
-      const fieldsResult = await this.getFields();
-      if (fieldsResult.success && fieldsResult.data) {
-        console.log('[searchAllIssues] 사용 가능한 필드 목록:');
-        fieldsResult.data.forEach((f) => {
-          console.log(`  [${f.id}] ${f.name}${f.custom ? ' (custom)' : ''}${f.schema ? ` - type: ${f.schema.type}` : ''}`);
-        });
-      }
-
       // 첫 번째 요청
       const firstResult = await this.client.get<JiraSearchResult>(
         JIRA_ROUTES.ISSUE_SEARCH,
