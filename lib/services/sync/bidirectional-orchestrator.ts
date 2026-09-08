@@ -45,6 +45,8 @@ export interface TicketRef {
   summary: string;
   updated?: string;
   statusName?: string;
+  /** Jira 상태 카테고리 키 (new | indeterminate | done) - 색 구분용, 언어 무관 */
+  statusCategoryKey?: string;
 }
 
 /** 양쪽에 다 있는 티켓 쌍 (요구사항 3) */
@@ -477,6 +479,7 @@ function toRef(ticket: JiraIssue): TicketRef {
     summary: ticket.fields.summary,
     updated: ticket.fields.updated,
     statusName: ticket.fields.status?.name,
+    statusCategoryKey: ticket.fields.status?.statusCategory?.key,
   };
 }
 

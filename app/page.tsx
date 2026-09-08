@@ -53,6 +53,7 @@ import {
   type ConflictItem,
   type MissingItem,
   type SyncDirection,
+  type TicketRef,
 } from '@/lib/services/sync/bidirectional-orchestrator';
 import { BidirectionalExecutor } from '@/lib/services/sync/bidirectional-executor';
 import type { SyncLog } from '@/lib/services/sync/types';
@@ -642,6 +643,7 @@ export default function HomePage() {
                             <span className="flex-1 min-w-0 truncate text-sm">
                               {item.ticket.summary}
                             </span>
+                            <StatusBadge ticket={item.ticket} />
                             {done ? (
                               <DoneBadge mark={done} />
                             ) : (
@@ -700,6 +702,7 @@ export default function HomePage() {
                             <span className="flex-1 min-w-0 truncate text-sm">
                               {item.ticket.summary}
                             </span>
+                            <StatusBadge ticket={item.ticket} />
                             {done ? (
                               <DoneBadge mark={done} />
                             ) : (
@@ -787,6 +790,8 @@ export default function HomePage() {
                               <span className="flex-1 min-w-0 truncate text-sm text-muted-foreground">
                                 {item.source.summary}
                               </span>
+                              <StatusBadge ticket={item.source} />
+                              <StatusBadge ticket={item.target} />
                               <span className="shrink-0 text-xs font-semibold text-yellow-700 bg-yellow-50 border border-yellow-200 rounded px-2 py-0.5">
                                 {item.comparison.changed.length}개 항목 다름
                               </span>
@@ -1077,6 +1082,29 @@ function Section({
       </div>
       <div className="rounded-lg border px-3">{children}</div>
     </div>
+  );
+}
+
+/** 티켓 진행상태 배지 — 이미 완료된/불필요한 항목을 목록에서 바로 구분하기 위한 표시 */
+function StatusBadge({ ticket }: { ticket: TicketRef }) {
+  if (!ticket.statusName) return null;
+
+  // 상태 이름은 프로젝트/언어마다 달라서 statusCategory 로 색을 정한다
+  const category = ticket.statusCategoryKey;
+  const className =
+    category === 'done'
+      ? 'text-green-700 bg-green-50 border-green-200'
+      : category === 'indeterminate'
+        ? 'text-blue-700 bg-blue-50 border-blue-200'
+        : 'text-gray-600 bg-gray-50 border-gray-200';
+
+  return (
+    <span
+      className={`shrink-0 text-xs font-medium px-2 py-0.5 rounded border ${className}`}
+      title={`진행상태: ${ticket.statusName}`}
+    >
+      {ticket.statusName}
+    </span>
   );
 }
 
