@@ -3,6 +3,20 @@
 import { SprintInfo } from './types';
 import { JiraClient } from '@/lib/services/jira/client';
 import { dbServer } from '@/lib/db';
+import {
+  convertToFullYearMonth,
+  extractSprintPeriod,
+  formatYearMonth,
+  sprintYearMonthOf,
+} from './sprint-name';
+
+// 이름/연월 계산은 순수 모듈에 모여 있다. 여기서 다시 내보내 기존 import 를 깨지 않는다.
+export {
+  addMonths,
+  formatYearMonth,
+  selectableYearMonths,
+  sprintYearMonthOf,
+} from './sprint-name';
 
 /**
  * 스프린트 캐시 클래스
@@ -23,27 +37,40 @@ class SprintCache {
     return sprints;
   }
 
+  /**
+   * 보드의 active/future 스프린트를 모두 가져온다.
+   *
+   * **반드시 끝까지 페이지를 넘긴다.** 미래 스프린트까지 비교 대상이 되면서
+   * 한 페이지(50개)만 받으면 몇 달 뒤 스프린트가 목록에서 빠져
+   * "스프린트를 찾을 수 없습니다" 로 멈춘다.
+   */
   private async fetchSprints(boardId: number, instance: 'ignite' | 'hmg'): Promise<SprintInfo[]> {
     try {
       const client = new JiraClient(instance);
-      const result = await client.get<{
-        values: Array<{
-          id: number;
-          name: string;
-          state: 'active' | 'future' | 'closed';
-        }>;
-      }>(`agile/1.0/board/${boardId}/sprint`, {
-        state: 'active,future',
-        maxResults: '50',
-      });
+      const pageSize = 50;
+      const sprints: SprintInfo[] = [];
 
-      if (result.success && result.data?.values) {
-        return result.data.values.map((sprint) => ({
-          ...sprint,
-          boardId,
-        }));
+      for (let startAt = 0; ; startAt += pageSize) {
+        const result = await client.get<{
+          isLast?: boolean;
+          values: Array<{
+            id: number;
+            name: string;
+            state: 'active' | 'future' | 'closed';
+          }>;
+        }>(`agile/1.0/board/${boardId}/sprint`, {
+          state: 'active,future',
+          startAt: String(startAt),
+          maxResults: String(pageSize),
+        });
+
+        const values = result.success ? (result.data?.values ?? []) : [];
+        sprints.push(...values.map((sprint) => ({ ...sprint, boardId })));
+
+        if (!result.success || result.data?.isLast !== false || values.length === 0) break;
       }
-      return [];
+
+      return sprints;
     } catch {
       return [];
     }
@@ -78,26 +105,6 @@ async function getBoardId(projectKey: string): Promise<number | null> {
   return null;
 }
 
-/**
- * 소스 프로젝트 스프린트 이름에서 기간 추출
- * 예: "FEHG 2511" → "2511", "DEVBE1 202511" → "202511"
- */
-function extractSprintPeriod(sprintName: string): string | null {
-  const match = sprintName.match(/(?<=\s)(\d+)\s*$/);
-  return match ? match[1] : null;
-}
-
-/**
- * 기간을 전체 연월 형식으로 변환
- * 예: "2511" → "202511"
- */
-function convertToFullYearMonth(period: string): string {
-  if (period.length === 4) {
-    return '20' + period;
-  }
-  return period;
-}
-
 // 프로젝트 키 → 스프린트 이름 prefix 매핑
 // 프로젝트 키와 스프린트 prefix가 다른 경우 여기에 추가
 const SPRINT_PREFIX_MAP: Record<string, string> = {
@@ -116,41 +123,24 @@ export function buildTargetSprintName(projectKey: string, yearMonth: string): st
 }
 
 /**
- * 날짜를 스프린트 이름에 쓰는 연월 형식(YYYYMM)으로 변환
- * 예: 2026-08-13 → "202608"
- */
-export function formatYearMonth(date: Date = new Date()): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  return `${year}${month}`;
-}
-
-/**
- * 프로젝트의 현재 월 스프린트를 조회한다.
+ * 프로젝트의 특정 연월 스프린트를 조회한다.
  *
- * 결정 3: 대상 범위는 현재 스프린트로 한정한다. 스프린트 이름은 현재 월 형식이다.
- * **현재 월 스프린트가 없으면 null 을 반환한다 — 호출부는 오류로 처리하고 멈춰야 한다.**
+ * 결정 3: 대상 범위는 **고른 연월의 스프린트 하나**로 한정한다 (기본값은 현재 월).
+ * **해당 스프린트가 없으면 null 을 반환한다 — 호출부는 오류로 처리하고 멈춰야 한다.**
  * (다른 스프린트로 대체하거나 전체를 훑는 폴백을 만들지 말 것)
  */
-export async function findCurrentMonthSprint(
+export async function findSprintByYearMonth(
   projectKey: string,
   instance: 'ignite' | 'hmg' = 'ignite',
-  now: Date = new Date()
+  yearMonth: string = formatYearMonth()
 ): Promise<SprintInfo | null> {
   const boardId = await getBoardId(projectKey);
   if (!boardId) return null;
 
-  const sprintName = buildTargetSprintName(projectKey, formatYearMonth(now));
+  const sprintName = buildTargetSprintName(projectKey, yearMonth);
   const sprints = await sprintCache.getSprintsForBoard(boardId, instance);
 
   return sprints.find((sprint) => sprint.name === sprintName) ?? null;
-}
-
-/**
- * 프로젝트의 현재 월 스프린트 이름 (조회 없이 이름만 필요할 때)
- */
-export function currentMonthSprintName(projectKey: string, now: Date = new Date()): string {
-  return buildTargetSprintName(projectKey, formatYearMonth(now));
 }
 
 /**
@@ -160,14 +150,22 @@ export function currentMonthSprintName(projectKey: string, now: Date = new Date(
  * (예: BEDEV1-176 = [202608(closed), 202609(active), 202606(closed)])
  * `[0]` 을 쓰면 닫힌 지난 스프린트가 잡혀 대상에서 이름을 못 찾는다 —
  * 대상 보드 조회는 state=active,future 라 닫힌 스프린트가 없다.
- * 그래서 **active 우선, 없으면 첫 번째** 로 고른다.
+ *
+ * 고르는 순서는 **비교 대상 연월 → active → 첫 번째** 다.
+ * 비교를 미래 스프린트로 돌리면 active 는 이번 달 스프린트라 기준이 어긋나므로,
+ * 지금 보고 있는 연월의 스프린트가 있으면 그것이 먼저다.
  * field-canonicalizer 의 canonicalizeSprint 와 같은 규칙이어야 한다.
  * (규칙이 다르면 비교가 매퍼가 쓰지 않는 값을 보고 거짓 diff 를 낸다)
  */
 export function pickSprint(
-  sprints: Array<{ id: number; name: string; state?: string }> | undefined | null
+  sprints: Array<{ id: number; name: string; state?: string }> | undefined | null,
+  preferredYearMonth?: string | null
 ): { id: number; name: string } | null {
   if (!Array.isArray(sprints) || sprints.length === 0) return null;
+  if (preferredYearMonth) {
+    const scoped = sprints.find((s) => sprintYearMonthOf(s?.name) === preferredYearMonth);
+    if (scoped) return scoped;
+  }
   const active = sprints.find((s) => s?.state === 'active');
   return active ?? sprints[0];
 }

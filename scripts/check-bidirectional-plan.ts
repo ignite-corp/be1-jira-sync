@@ -71,7 +71,16 @@ async function main() {
   const args = process.argv.slice(2);
   const userIdx = args.indexOf('--user');
   const userName = userIdx >= 0 ? args[userIdx + 1] : undefined;
-  const targetFilter = args.filter((a, i) => a !== '--user' && i !== userIdx + 1)[0];
+  // --sprint 202612 처럼 비교할 연월을 줄 수 있다 (없으면 이번 달)
+  const sprintIdx = args.indexOf('--sprint');
+  const yearMonth = sprintIdx >= 0 ? args[sprintIdx + 1] : undefined;
+  const targetFilter = args.filter(
+    (a, i) =>
+      a !== '--user' &&
+      a !== '--sprint' &&
+      i !== userIdx + 1 &&
+      i !== sprintIdx + 1
+  )[0];
 
   let assigneeAccountId = '';
   if (userName) assigneeAccountId = await loadUserCredentials(userName);
@@ -98,13 +107,13 @@ async function main() {
 
   if (!targetFilter) {
     console.warn(
-      '\n대상 프로젝트와 담당자를 주면 계획을 세운다. 예: ... check-bidirectional-plan.ts KQ --user 정용석'
+      '\n대상 프로젝트와 담당자를 주면 계획을 세운다. 예: ... check-bidirectional-plan.ts KQ --user 정용석 [--sprint 202612]'
     );
     return;
   }
 
   if (!assigneeAccountId) {
-    console.error('\n--user <이름> 이 필요하다. 조회는 현재 스프린트 + 해당 담당자로 한정된다.');
+    console.error('\n--user <이름> 이 필요하다. 조회는 비교 스프린트(기본 이번 달) + 해당 담당자로 한정된다.');
     process.exit(1);
   }
 
@@ -123,7 +132,7 @@ async function main() {
   const orchestrator = new BidirectionalOrchestrator(logger);
 
   try {
-    const plan = await orchestrator.buildPlan(profile.id, { assigneeAccountId });
+    const plan = await orchestrator.buildPlan(profile.id, { assigneeAccountId, yearMonth });
 
     console.warn('\n=== 결과 ===');
     console.warn(`  스프린트: "${plan.sourceSprintName}" ↔ "${plan.targetSprintName}"`);

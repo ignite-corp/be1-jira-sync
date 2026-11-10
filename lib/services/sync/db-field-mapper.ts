@@ -151,6 +151,12 @@ export interface FieldMapOptions {
    * 프로젝트 설정을 바꾸므로 **실제 쓰기 경로에서만** 켠다. 계획 수립에서는 꺼 둔다.
    */
   createMissingVersions?: boolean;
+  /**
+   * 비교/쓰기 기준 스프린트의 연월(YYYYMM).
+   * 티켓이 여러 스프린트에 속해 있을 때 어느 스프린트를 옮길지 정한다.
+   * 없으면 active 스프린트를 우선한다. (pickSprint 참고)
+   */
+  sprintYearMonth?: string | null;
 }
 
 /**
@@ -297,7 +303,8 @@ export async function mapFieldsFromDb(
         const sprint = pickSprint(
           fehgFields[source_field] as
             | Array<{ id: number; name: string; state?: string }>
-            | undefined
+            | undefined,
+          options?.sprintYearMonth
         );
 
         if (sprint?.name) {

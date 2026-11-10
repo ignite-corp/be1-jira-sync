@@ -19,8 +19,9 @@ import {
   type SyncProfileInfo,
 } from './db-field-mapper';
 import {
-  currentMonthSprintName,
-  findCurrentMonthSprint,
+  buildTargetSprintName,
+  findSprintByYearMonth,
+  formatYearMonth,
   initSprintCache,
 } from './sprint-mapper';
 import {
@@ -82,6 +83,8 @@ export interface BidirectionalPlan {
   targetInstance: 'ignite' | 'hmg';
   /** 같은 Atlassian 사이트인가 (연결 판정 방식이 갈린다 - 결정 1) */
   sameSite: boolean;
+  /** 비교 기준 연월 (YYYYMM) - 현재 월일 수도, 사람이 고른 미래 월일 수도 있다 */
+  sprintYearMonth: string;
   sourceSprintName: string;
   targetSprintName: string;
   /** 요구사항 1: BEDEV1 에만 있음 → 대상에 생성 */
@@ -115,25 +118,31 @@ export class AssigneeAccountNotMappedError extends Error {
 export interface BuildPlanOptions {
   /** 소스 인스턴스 기준 담당자 accountId. 양쪽 조회를 이 담당자로 한정한다. */
   assigneeAccountId: string;
-  /** 현재 월 스프린트 판정 기준 시각 (테스트용) */
+  /**
+   * 비교할 스프린트의 연월 (YYYYMM, 예: "202611").
+   * 없으면 현재 월. 현재 월보다 미래 월을 줘도 된다 (미리 계획된 스프린트 비교).
+   */
+  yearMonth?: string;
+  /** 현재 월 판정 기준 시각 (테스트용) */
   now?: Date;
 }
 
 /**
- * 현재 월 스프린트를 못 찾았을 때 던지는 오류.
+ * 비교 대상으로 고른 스프린트를 못 찾았을 때 던지는 오류.
  * 결정 3: 다른 스프린트로 대체하거나 전체를 훑는 폴백을 만들지 않는다.
  */
-export class CurrentSprintNotFoundError extends Error {
+export class SprintNotFoundError extends Error {
   constructor(
     public readonly projectKey: string,
     public readonly expectedSprintName: string
   ) {
     super(
-      `${projectKey}: 현재 월 스프린트 "${expectedSprintName}" 를 찾을 수 없습니다. 스프린트를 먼저 만들어 주세요.`
+      `${projectKey}: 스프린트 "${expectedSprintName}" 를 찾을 수 없습니다. 스프린트를 먼저 만들어 주세요.`
     );
-    this.name = 'CurrentSprintNotFoundError';
+    this.name = 'SprintNotFoundError';
   }
 }
+
 
 export class BidirectionalOrchestrator {
   constructor(private logger: SyncLogger) {}
@@ -150,6 +159,8 @@ export class BidirectionalOrchestrator {
     this.warnedMapping.clear();
 
     const now = options.now ?? new Date();
+    // 고르지 않으면 현재 월. 미래 월을 고르면 그 달의 스프린트끼리 비교한다.
+    const yearMonth = options.yearMonth ?? formatYearMonth(now);
 
     const profile = await getSyncProfileInfo(profileId);
     if (!profile) {
@@ -175,22 +186,22 @@ export class BidirectionalOrchestrator {
       targetInstance
     );
 
-    // 1. 양쪽 현재 월 스프린트 확인 (결정 3: 없으면 오류로 멈춘다)
+    // 1. 양쪽에서 고른 연월의 스프린트 확인 (결정 3: 없으면 오류로 멈춘다)
     const [sourceSprint, targetSprint] = await Promise.all([
-      findCurrentMonthSprint(profile.sourceProjectKey, sourceInstance, now),
-      findCurrentMonthSprint(profile.targetProjectKey, targetInstance, now),
+      findSprintByYearMonth(profile.sourceProjectKey, sourceInstance, yearMonth),
+      findSprintByYearMonth(profile.targetProjectKey, targetInstance, yearMonth),
     ]);
 
     if (!sourceSprint) {
-      throw new CurrentSprintNotFoundError(
+      throw new SprintNotFoundError(
         profile.sourceProjectKey,
-        currentMonthSprintName(profile.sourceProjectKey, now)
+        buildTargetSprintName(profile.sourceProjectKey, yearMonth)
       );
     }
     if (!targetSprint) {
-      throw new CurrentSprintNotFoundError(
+      throw new SprintNotFoundError(
         profile.targetProjectKey,
-        currentMonthSprintName(profile.targetProjectKey, now)
+        buildTargetSprintName(profile.targetProjectKey, yearMonth)
       );
     }
 
@@ -198,7 +209,7 @@ export class BidirectionalOrchestrator {
       `스프린트 확인: "${sourceSprint.name}"(id=${sourceSprint.id}) ↔ "${targetSprint.name}"(id=${targetSprint.id})`
     );
 
-    // 2. 양쪽 티켓 조회 (현재 스프린트 + 담당자로 한정)
+    // 2. 양쪽 티켓 조회 (비교 스프린트 + 담당자로 한정)
     //
     // 매핑에 지정된 필드를 조회 필드에 반드시 포함시킨다.
     // DEFAULT_FIELDS 에만 의존하면 timeoriginalestimate 같은 매핑 필드가 안 넘어와서
@@ -246,6 +257,7 @@ export class BidirectionalOrchestrator {
       sourceInstance,
       targetInstance,
       sameSite,
+      sprintYearMonth: yearMonth,
       sourceSprintName: sourceSprint.name,
       targetSprintName: targetSprint.name,
       createInTarget: [],
@@ -281,17 +293,23 @@ export class BidirectionalOrchestrator {
 
         const targetTicket = targetByKey.get(targetKey);
         if (!targetTicket) {
-          // 연결은 돼 있으나 대상의 현재 스프린트 밖 → 범위 밖이므로 건드리지 않는다.
+          // 연결은 돼 있으나 대상의 비교 스프린트 밖 → 범위 밖이므로 건드리지 않는다.
           // (여기서 생성해 버리면 중복 티켓이 생긴다)
           plan.skipped.push({
             key: `${sourceTicket.key} → ${targetKey}`,
-            reason: `연결된 대상 티켓이 현재 스프린트("${targetSprint.name}") 밖입니다`,
+            reason: `연결된 대상 티켓이 비교 스프린트("${targetSprint.name}") 밖입니다`,
           });
           continue;
         }
 
         // 요구사항 3: 양쪽에 다 있음 → 매핑된 내용 비교
-        const comparison = await this.compare(sourceTicket, targetTicket, profileId, profile);
+        const comparison = await this.compare(
+          sourceTicket,
+          targetTicket,
+          profileId,
+          profile,
+          yearMonth
+        );
 
         const item: ConflictItem = {
           source: toRef(sourceTicket),
@@ -322,10 +340,10 @@ export class BidirectionalOrchestrator {
         // 같은 사이트: 대상 티켓의 issuelinks 에 inward 로 소스 키가 보인다 (2단계 실측 확인)
         const inwardSourceKeys = findLinkedSourceKeys(targetTicket, profile.sourceProjectKey);
         if (inwardSourceKeys.length > 0) {
-          // 소스에는 연결이 있으나 소스의 현재 스프린트 밖
+          // 소스에는 연결이 있으나 소스의 비교 스프린트 밖
           plan.skipped.push({
             key: `${targetTicket.key} → ${inwardSourceKeys.join(', ')}`,
-            reason: `연결된 ${profile.sourceProjectKey} 티켓이 현재 스프린트("${sourceSprint.name}") 밖입니다`,
+            reason: `연결된 ${profile.sourceProjectKey} 티켓이 비교 스프린트("${sourceSprint.name}") 밖입니다`,
           });
           continue;
         }
@@ -408,7 +426,8 @@ export class BidirectionalOrchestrator {
     sourceTicket: JiraIssue,
     targetTicket: JiraIssue,
     profileId: string,
-    profile: SyncProfileInfo
+    profile: SyncProfileInfo,
+    sprintYearMonth: string
   ): Promise<TicketComparison> {
     const mappings = await getFieldMappings(profileId);
     // 이름으로 해석하지 못해 빠진 값(스프린트/버전)을 로그로 드러낸다.
@@ -419,6 +438,7 @@ export class BidirectionalOrchestrator {
       profileId,
       profile.targetProjectKey,
       {
+        sprintYearMonth,
         onWarning: (message) => {
           if (this.warnedMapping.has(message)) return;
           this.warnedMapping.add(message);
@@ -447,7 +467,9 @@ export class BidirectionalOrchestrator {
       this.missingStatusMapping.add(sourceStatusId);
     }
 
-    return compareMappedFields(mappings, mappedSourceFields, targetTicket.fields, status);
+    return compareMappedFields(mappings, mappedSourceFields, targetTicket.fields, status, {
+      sprintYearMonth,
+    });
   }
 
   /** 상태 매핑이 없어 비교에서 뺀 소스 상태 id (경고를 한 번만 내기 위해 모은다) */

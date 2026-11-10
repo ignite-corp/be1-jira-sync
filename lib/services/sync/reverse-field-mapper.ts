@@ -56,7 +56,7 @@ export async function mapFieldsToSource(
     switch (transform_type) {
       case 'sprint_map': {
         const sprints = value as Array<{ id: number; name: string; state?: string }> | undefined;
-        const sprint = pickSprint(sprints);
+        const sprint = pickSprint(sprints, options?.sprintYearMonth);
         if (!sprint?.name) break;
 
         // mapSprintToTarget 은 "이름에서 연월 추출 → 대상 프로젝트 이름 규칙으로 재조립 → id 조회"

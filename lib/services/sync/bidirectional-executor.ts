@@ -53,7 +53,8 @@ export class BidirectionalExecutor {
    */
   async createInTarget(
     sourceTicket: JiraIssue,
-    profileId: string
+    profileId: string,
+    sprintYearMonth?: string
   ): Promise<BidirectionalActionResult> {
     const profile = await getSyncProfileInfo(profileId);
     if (!profile) {
@@ -68,6 +69,7 @@ export class BidirectionalExecutor {
       const warnings: string[] = [];
       const mappedFields = sanitizeWritePayload(
         await mapFieldsFromDb(sourceTicket, profileId, profile.targetProjectKey, {
+          sprintYearMonth,
           onWarning: (w) => warnings.push(w),
           // 실제 쓰기 경로이므로 없는 수정 버전은 만들어서 반영한다
           createMissingVersions: true,
@@ -132,7 +134,8 @@ export class BidirectionalExecutor {
    */
   async createInSource(
     targetTicket: JiraIssue,
-    profileId: string
+    profileId: string,
+    sprintYearMonth?: string
   ): Promise<BidirectionalActionResult> {
     const profile = await getSyncProfileInfo(profileId);
     if (!profile) {
@@ -148,6 +151,7 @@ export class BidirectionalExecutor {
       const warnings: string[] = [];
       const mappedFields = sanitizeWritePayload(
         await mapFieldsToSource(targetTicket, profileId, {
+          sprintYearMonth,
           onWarning: (w) => warnings.push(w),
           createMissingVersions: true,
         })
@@ -220,7 +224,8 @@ export class BidirectionalExecutor {
     direction: SyncDirection,
     sourceTicket: JiraIssue,
     targetTicket: JiraIssue,
-    profileId: string
+    profileId: string,
+    sprintYearMonth?: string
   ): Promise<BidirectionalActionResult> {
     const profile = await getSyncProfileInfo(profileId);
     if (!profile) {
@@ -238,6 +243,7 @@ export class BidirectionalExecutor {
 
         const fields = sanitizeWritePayload(
           await mapFieldsFromDb(sourceTicket, profileId, profile.targetProjectKey, {
+            sprintYearMonth,
             onWarning: (w) => warnings.push(w),
             createMissingVersions: true,
           })
@@ -266,6 +272,7 @@ export class BidirectionalExecutor {
 
         const fields = sanitizeWritePayload(
           await mapFieldsToSource(targetTicket, profileId, {
+            sprintYearMonth,
             onWarning: (w) => warnings.push(w),
             createMissingVersions: true,
           })

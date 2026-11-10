@@ -54,6 +54,15 @@ export interface TicketComparison {
   identical: boolean;
 }
 
+export interface CompareOptions {
+  /**
+   * 비교 중인 스프린트의 연월(YYYYMM).
+   * 티켓이 여러 스프린트에 속해 있을 때 기준 스프린트를 고르는 데 쓴다.
+   * (미래 스프린트를 비교할 때 active 스프린트가 잡혀 거짓 diff 가 나는 것을 막는다)
+   */
+  sprintYearMonth?: string | null;
+}
+
 /**
  * 매핑된 소스 값과 대상 티켓의 실제 값을 비교한다.
  *
@@ -65,7 +74,8 @@ export function compareMappedFields(
   mappings: DbFieldMapping[],
   mappedSourceFields: Record<string, unknown>,
   targetFields: JiraIssue['fields'],
-  status?: StatusComparison
+  status?: StatusComparison,
+  options?: CompareOptions
 ): TicketComparison {
   const fields: FieldDiff[] = [];
 
@@ -86,8 +96,12 @@ export function compareMappedFields(
   for (const mapping of mappings) {
     const kind = resolveFieldKind(mapping.transform_type, mapping.source_field);
 
-    const source = canonicalizeFieldValue(kind, mappedSourceFields[mapping.target_field]);
-    const target = canonicalizeFieldValue(kind, targetFields[mapping.target_field]);
+    const source = canonicalizeFieldValue(kind, mappedSourceFields[mapping.target_field], {
+      sprintYearMonth: options?.sprintYearMonth,
+    });
+    const target = canonicalizeFieldValue(kind, targetFields[mapping.target_field], {
+      sprintYearMonth: options?.sprintYearMonth,
+    });
 
     // 양쪽 다 비어 있으면 비교할 것이 없다.
     // (한쪽만 비어 있는 것은 **실제 차이**다 - 양방향에서는 한쪽에만 값이 생기는 일이 흔하고,

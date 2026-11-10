@@ -48,7 +48,7 @@ import { SyncLogger } from '@/lib/services/sync/logger';
 import {
   AssigneeAccountNotMappedError,
   BidirectionalOrchestrator,
-  CurrentSprintNotFoundError,
+  SprintNotFoundError,
   type BidirectionalPlan,
   type ConflictItem,
   type MissingItem,
@@ -57,6 +57,7 @@ import {
 } from '@/lib/services/sync/bidirectional-orchestrator';
 import { BidirectionalExecutor } from '@/lib/services/sync/bidirectional-executor';
 import type { SyncLog } from '@/lib/services/sync/types';
+import { formatYearMonth, selectableYearMonths } from '@/lib/services/sync/sprint-name';
 
 interface TeamSyncTarget {
   projectId: string;
@@ -80,6 +81,13 @@ const missingKey = (profileId: string, direction: 'toTarget' | 'toSource', ticke
 /** 전체 비교 선택값 */
 const ALL_TARGETS = 'ALL';
 
+/** 비교 스프린트로 고를 수 있는 미래 개월 수 (이번 달 + 이만큼) */
+const FUTURE_MONTHS = 6;
+
+/** "202611" → "2026-11" (선택지 표시용) */
+const formatYearMonthLabel = (yearMonth: string) =>
+  `${yearMonth.slice(0, 4)}-${yearMonth.slice(4, 6)}`;
+
 /** 처리 완료된 항목 표시용 */
 interface DoneMark {
   label: string;
@@ -102,6 +110,18 @@ export default function HomePage() {
   const [teamSyncTargets, setTeamSyncTargets] = useState<TeamSyncTarget[]>([]);
   // 기본은 전체 비교 - 선택하지 않아도 바로 비교를 누를 수 있다
   const [selectedProfileId, setSelectedProfileId] = useState<string>(ALL_TARGETS);
+  // 비교할 스프린트의 연월. 기본은 이번 달이고, 미래 달도 고를 수 있다.
+  const [selectedYearMonth, setSelectedYearMonth] = useState<string>(() => formatYearMonth());
+  const [yearMonthChoices, setYearMonthChoices] = useState<string[]>(() =>
+    selectableYearMonths(FUTURE_MONTHS)
+  );
+
+  // 서버 렌더 시각과 브라우저 시각의 월이 다를 수 있어(시간대 차이) 마운트 후 브라우저 기준으로 다시 맞춘다
+  useEffect(() => {
+    const current = formatYearMonth();
+    setYearMonthChoices((prev) => (prev[0] === current ? prev : selectableYearMonths(FUTURE_MONTHS)));
+    setSelectedYearMonth((prev) => (prev === current ? prev : current));
+  }, []);
   const [isComparing, setIsComparing] = useState(false);
   const [plans, setPlans] = useState<BidirectionalPlan[]>([]);
   const [logs, setLogs] = useState<SyncLog[]>([]);
@@ -214,14 +234,16 @@ export default function HomePage() {
     for (const target of targets) {
       try {
         const result = await orchestrator.buildPlan(target.syncProfileId, {
-          // 현재 스프린트 + 본인 담당 티켓으로 한정한다.
+          // 비교 스프린트 + 본인 담당 티켓으로 한정한다.
           // KQ 같은 공용 프로젝트는 스프린트에 여러 팀 티켓이 섞여 있다.
           assigneeAccountId: currentUser!.igniteAccountId,
+          // 고른 연월의 스프린트로 한정한다 (기본 이번 달, 미래 달 선택 가능)
+          yearMonth: selectedYearMonth,
         });
         results.push(result);
       } catch (error) {
         const reason =
-          error instanceof CurrentSprintNotFoundError ||
+          error instanceof SprintNotFoundError ||
           error instanceof AssigneeAccountNotMappedError
             ? error.message
             : error instanceof Error
@@ -282,8 +304,8 @@ export default function HomePage() {
       const executor = new BidirectionalExecutor(makeLogger());
       const result =
         direction === 'toTarget'
-          ? await executor.createInTarget(item.raw, plan.profileId)
-          : await executor.createInSource(item.raw, plan.profileId);
+          ? await executor.createInTarget(item.raw, plan.profileId, plan.sprintYearMonth)
+          : await executor.createInSource(item.raw, plan.profileId, plan.sprintYearMonth);
 
       const createdKey = direction === 'toTarget' ? result.targetKey : result.sourceKey;
       const createdInstance =
@@ -374,7 +396,8 @@ export default function HomePage() {
         direction,
         item.sourceRaw,
         item.targetRaw,
-        plan.profileId
+        plan.profileId,
+        plan.sprintYearMonth
       );
       setDoneKeys((prev) =>
         new Map(prev).set(key, {
@@ -435,7 +458,8 @@ export default function HomePage() {
             'sourceToTarget',
             item.sourceRaw,
             item.targetRaw,
-            plan.profileId
+            plan.profileId,
+            plan.sprintYearMonth
           );
 
           setDoneKeys((prev) =>
@@ -536,9 +560,22 @@ export default function HomePage() {
             <CardContent className="flex-1 overflow-hidden p-0">
               <ScrollArea className="h-full px-6 pb-6">
                 {/* 대상 선택 */}
-                <div className="flex gap-2 pb-4">
+                <div className="flex flex-wrap gap-2 pb-4">
+                  <Select value={selectedYearMonth} onValueChange={setSelectedYearMonth}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="스프린트 월" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {yearMonthChoices.map((ym, idx) => (
+                        <SelectItem key={ym} value={ym}>
+                          {formatYearMonthLabel(ym)}
+                          {idx === 0 ? ' (이번 달)' : ` (+${idx}개월)`}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <Select value={selectedProfileId} onValueChange={setSelectedProfileId}>
-                    <SelectTrigger className="flex-1">
+                    <SelectTrigger className="min-w-[220px] flex-1">
                       <SelectValue placeholder="동기화 대상을 선택하세요" />
                     </SelectTrigger>
                     <SelectContent>
@@ -566,7 +603,7 @@ export default function HomePage() {
 
                 {plans.length === 0 && !isComparing && (
                   <p className="text-sm text-muted-foreground italic py-8">
-                    비교를 실행하면 양쪽 현재 월 스프린트의 티켓을 비교합니다.
+                    비교를 실행하면 고른 월(기본 이번 달) 스프린트의 티켓을 양쪽에서 비교합니다.
                   </p>
                 )}
 
