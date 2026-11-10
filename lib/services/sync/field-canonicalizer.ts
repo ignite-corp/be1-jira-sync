@@ -10,7 +10,7 @@
 // 핵심 전제: 비교는 항상 **매핑을 통과한 값(대상 ID 공간)** 과 **대상의 실제 값** 사이에서 이뤄진다.
 // 그래서 동기화 직후에는 양쪽이 같은 값이 되어 diff 가 비게 된다. (결정 2)
 
-import { sprintYearMonthOf } from './sprint-name';
+import { pickScopedSprint } from './sprint-name';
 
 /** 비교 대상 필드의 종류 */
 export type FieldKind =
@@ -33,11 +33,11 @@ const EMPTY: CanonicalValue = { canonical: null, display: '(없음)' };
 
 export interface CanonicalizeOptions {
   /**
-   * 비교 중인 스프린트의 연월(YYYYMM).
+   * 비교 범위에 든 스프린트 연월 목록(YYYYMM).
    * 티켓이 여러 스프린트에 속해 있을 때 어느 스프린트를 기준으로 볼지 정한다.
-   * sprint-mapper 의 pickSprint 와 같은 규칙이어야 한다.
+   * 매핑(pickSprint)과 같은 규칙이어야 한다 - 둘 다 pickScopedSprint 를 쓴다.
    */
-  sprintYearMonth?: string | null;
+  sprintYearMonths?: readonly string[] | null;
 }
 
 /**
@@ -79,7 +79,7 @@ export function canonicalizeFieldValue(
     case 'user':
       return canonicalizeUser(value);
     case 'sprint':
-      return canonicalizeSprint(value, options?.sprintYearMonth);
+      return canonicalizeSprint(value, options?.sprintYearMonths);
     case 'versions':
       return canonicalizeVersions(value);
     case 'timetracking':
@@ -240,25 +240,17 @@ export function extractSprintYearMonth(name: string): string | null {
  */
 function canonicalizeSprint(
   value: unknown,
-  preferredYearMonth?: string | null
+  preferredYearMonths?: readonly string[] | null
 ): CanonicalValue {
   const pick = (v: unknown): { id?: unknown; name?: string } | null => {
     if (Array.isArray(v)) {
-      if (v.length === 0) return null;
-      // pickSprint 와 같은 순서: 비교 대상 연월 → active → 첫 번째
-      const scoped = preferredYearMonth
-        ? v.find(
-            (s) =>
-              s &&
-              typeof s === 'object' &&
-              sprintYearMonthOf((s as { name?: string }).name) === preferredYearMonth
-          )
-        : undefined;
-      if (scoped) return scoped as { id?: unknown; name?: string };
-      const active = v.find(
-        (s) => s && typeof s === 'object' && (s as { state?: string }).state === 'active'
+      const objects = v.filter(
+        (s): s is { id?: unknown; name?: string; state?: string } =>
+          !!s && typeof s === 'object'
       );
-      return (active ?? v[0]) as { id?: unknown; name?: string };
+      if (objects.length === 0) return null;
+      // 매핑과 같은 규칙으로 고른다 (비교 범위 → active → 첫 번째)
+      return pickScopedSprint(objects, preferredYearMonths);
     }
     if (typeof v === 'number') return { id: v };
     if (typeof v === 'string') return { id: v };

@@ -248,6 +248,59 @@ check(
 );
 
 check(
+  '스프린트: 비교 범위 안의 달을 active 보다 먼저 고른다',
+  canonicalizeFieldValue(
+    'sprint',
+    [
+      { id: 3649, name: 'BEDEV1 202611', state: 'active', boardId: 449 },
+      { id: 3701, name: 'BEDEV1 202612', state: 'future', boardId: 449 },
+    ],
+    { sprintYearMonths: ['202612'] }
+  ).canonical,
+  '3701'
+);
+
+check(
+  '스프린트: 범위가 여러 달이고 그 안에 active 가 있으면 active 를 고른다',
+  canonicalizeFieldValue(
+    'sprint',
+    [
+      { id: 3701, name: 'BEDEV1 202612', state: 'future', boardId: 449 },
+      { id: 3649, name: 'BEDEV1 202611', state: 'active', boardId: 449 },
+    ],
+    { sprintYearMonths: ['202611', '202612'] }
+  ).canonical,
+  '3649'
+);
+
+check(
+  '스프린트: 범위 안에 active 가 없으면 범위 중 가장 이른 달을 고른다',
+  canonicalizeFieldValue(
+    'sprint',
+    [
+      { id: 3702, name: 'BEDEV1 202701', state: 'future', boardId: 449 },
+      { id: 3701, name: 'BEDEV1 202612', state: 'future', boardId: 449 },
+      { id: 3649, name: 'BEDEV1 202611', state: 'active', boardId: 449 },
+    ],
+    { sprintYearMonths: ['202612', '202701'] }
+  ).canonical,
+  '3701'
+);
+
+check(
+  '스프린트: 범위 안의 스프린트가 없으면 예전 규칙(active 우선)으로 떨어진다',
+  canonicalizeFieldValue(
+    'sprint',
+    [
+      { id: 3649, name: 'BEDEV1 202611', state: 'active', boardId: 449 },
+      { id: 3451, name: 'BEDEV1 202610', state: 'closed', boardId: 449 },
+    ],
+    { sprintYearMonths: ['202705'] }
+  ).canonical,
+  '3649'
+);
+
+check(
   '수정버전: 순서가 달라도 같다고 판정',
   canonicalizeFieldValue('versions', [{ id: '10501' }, { id: '10502' }]).canonical ===
     canonicalizeFieldValue('versions', [

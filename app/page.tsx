@@ -81,12 +81,24 @@ const missingKey = (profileId: string, direction: 'toTarget' | 'toSource', ticke
 /** 전체 비교 선택값 */
 const ALL_TARGETS = 'ALL';
 
-/** 비교 스프린트로 고를 수 있는 미래 개월 수 (이번 달 + 이만큼) */
-const FUTURE_MONTHS = 6;
+/** 비교 범위로 고를 수 있는 최대 미래 개월 수 (이번 달 + 12개월 = 1년) */
+const MAX_FUTURE_MONTHS = 12;
 
-/** "202611" → "2026-11" (선택지 표시용) */
+/** 고를 수 있는 범위 선택지 (0 = 이번 달만) */
+const RANGE_CHOICES = Array.from({ length: MAX_FUTURE_MONTHS + 1 }, (_, i) => i);
+
+/** "202611" → "2026-11" (표시용) */
 const formatYearMonthLabel = (yearMonth: string) =>
   `${yearMonth.slice(0, 4)}-${yearMonth.slice(4, 6)}`;
+
+/** 범위 선택지 라벨. 예: 0 → "이번 달만", 6 → "+6개월 (2026-11 ~ 2027-05)" */
+const rangeLabel = (monthsAhead: number, months: string[]) => {
+  if (monthsAhead === 0) {
+    return `이번 달만 (${formatYearMonthLabel(months[0] ?? '')})`;
+  }
+  const last = months[monthsAhead];
+  return `+${monthsAhead}개월 (${formatYearMonthLabel(months[0] ?? '')} ~ ${formatYearMonthLabel(last ?? '')})`;
+};
 
 /** 처리 완료된 항목 표시용 */
 interface DoneMark {
@@ -110,18 +122,22 @@ export default function HomePage() {
   const [teamSyncTargets, setTeamSyncTargets] = useState<TeamSyncTarget[]>([]);
   // 기본은 전체 비교 - 선택하지 않아도 바로 비교를 누를 수 있다
   const [selectedProfileId, setSelectedProfileId] = useState<string>(ALL_TARGETS);
-  // 비교할 스프린트의 연월. 기본은 이번 달이고, 미래 달도 고를 수 있다.
-  const [selectedYearMonth, setSelectedYearMonth] = useState<string>(() => formatYearMonth());
-  const [yearMonthChoices, setYearMonthChoices] = useState<string[]>(() =>
-    selectableYearMonths(FUTURE_MONTHS)
+  // 비교 범위: 이번 달부터 몇 개월 뒤까지 볼지. 0 이면 이번 달만, 6 이면 이번 달 ~ +6개월.
+  const [monthsAhead, setMonthsAhead] = useState<number>(0);
+  const [allMonths, setAllMonths] = useState<string[]>(() =>
+    selectableYearMonths(MAX_FUTURE_MONTHS)
   );
 
   // 서버 렌더 시각과 브라우저 시각의 월이 다를 수 있어(시간대 차이) 마운트 후 브라우저 기준으로 다시 맞춘다
   useEffect(() => {
     const current = formatYearMonth();
-    setYearMonthChoices((prev) => (prev[0] === current ? prev : selectableYearMonths(FUTURE_MONTHS)));
-    setSelectedYearMonth((prev) => (prev === current ? prev : current));
+    setAllMonths((prev) =>
+      prev[0] === current ? prev : selectableYearMonths(MAX_FUTURE_MONTHS)
+    );
   }, []);
+
+  /** 실제로 비교할 연월 목록 (이번 달 ~ +monthsAhead) */
+  const selectedYearMonths = allMonths.slice(0, monthsAhead + 1);
   const [isComparing, setIsComparing] = useState(false);
   const [plans, setPlans] = useState<BidirectionalPlan[]>([]);
   const [logs, setLogs] = useState<SyncLog[]>([]);
@@ -237,8 +253,9 @@ export default function HomePage() {
           // 비교 스프린트 + 본인 담당 티켓으로 한정한다.
           // KQ 같은 공용 프로젝트는 스프린트에 여러 팀 티켓이 섞여 있다.
           assigneeAccountId: currentUser!.igniteAccountId,
-          // 고른 연월의 스프린트로 한정한다 (기본 이번 달, 미래 달 선택 가능)
-          yearMonth: selectedYearMonth,
+          // 고른 범위(이번 달 ~ +N개월)의 스프린트로 한정한다.
+          // 범위 안이라도 양쪽에 스프린트가 다 있는 달만 실제로 비교된다.
+          yearMonths: selectedYearMonths,
         });
         results.push(result);
       } catch (error) {
@@ -304,8 +321,8 @@ export default function HomePage() {
       const executor = new BidirectionalExecutor(makeLogger());
       const result =
         direction === 'toTarget'
-          ? await executor.createInTarget(item.raw, plan.profileId, plan.sprintYearMonth)
-          : await executor.createInSource(item.raw, plan.profileId, plan.sprintYearMonth);
+          ? await executor.createInTarget(item.raw, plan.profileId, plan.sprintYearMonths)
+          : await executor.createInSource(item.raw, plan.profileId, plan.sprintYearMonths);
 
       const createdKey = direction === 'toTarget' ? result.targetKey : result.sourceKey;
       const createdInstance =
@@ -397,7 +414,7 @@ export default function HomePage() {
         item.sourceRaw,
         item.targetRaw,
         plan.profileId,
-        plan.sprintYearMonth
+        plan.sprintYearMonths
       );
       setDoneKeys((prev) =>
         new Map(prev).set(key, {
@@ -459,7 +476,7 @@ export default function HomePage() {
             item.sourceRaw,
             item.targetRaw,
             plan.profileId,
-            plan.sprintYearMonth
+            plan.sprintYearMonths
           );
 
           setDoneKeys((prev) =>
@@ -551,7 +568,7 @@ export default function HomePage() {
               <CardTitle>비교 결과</CardTitle>
               <CardDescription>
                 {plans.length === 1
-                  ? `${plans[0].sourceProjectKey} "${plans[0].sourceSprintName}" ↔ ${plans[0].targetProjectKey} "${plans[0].targetSprintName}"`
+                  ? `${plans[0].sourceProjectKey} ↔ ${plans[0].targetProjectKey} · 스프린트 ${plans[0].sprintYearMonths.length}개 (${plans[0].sprintYearMonths.map(formatYearMonthLabel).join(', ')})`
                   : plans.length > 1
                     ? `${plans.length}개 대상 비교 결과`
                     : '동기화 대상을 선택하고 비교를 실행하세요'}
@@ -561,15 +578,17 @@ export default function HomePage() {
               <ScrollArea className="h-full px-6 pb-6">
                 {/* 대상 선택 */}
                 <div className="flex flex-wrap gap-2 pb-4">
-                  <Select value={selectedYearMonth} onValueChange={setSelectedYearMonth}>
-                    <SelectTrigger className="w-[180px]">
-                      <SelectValue placeholder="스프린트 월" />
+                  <Select
+                    value={String(monthsAhead)}
+                    onValueChange={(v) => setMonthsAhead(Number(v))}
+                  >
+                    <SelectTrigger className="w-[230px]">
+                      <SelectValue placeholder="비교할 스프린트 범위" />
                     </SelectTrigger>
                     <SelectContent>
-                      {yearMonthChoices.map((ym, idx) => (
-                        <SelectItem key={ym} value={ym}>
-                          {formatYearMonthLabel(ym)}
-                          {idx === 0 ? ' (이번 달)' : ` (+${idx}개월)`}
+                      {RANGE_CHOICES.map((n) => (
+                        <SelectItem key={n} value={String(n)}>
+                          {rangeLabel(n, allMonths)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -603,7 +622,7 @@ export default function HomePage() {
 
                 {plans.length === 0 && !isComparing && (
                   <p className="text-sm text-muted-foreground italic py-8">
-                    비교를 실행하면 고른 월(기본 이번 달) 스프린트의 티켓을 양쪽에서 비교합니다.
+                    비교를 실행하면 고른 범위(기본 이번 달)의 스프린트 티켓을 양쪽에서 비교합니다.
                   </p>
                 )}
 
@@ -616,7 +635,8 @@ export default function HomePage() {
                       <h2 className="text-base font-bold border-b pb-2">
                         {plan.sourceProjectKey} ↔ {plan.targetProjectKey}
                         <span className="ml-2 text-xs font-normal text-muted-foreground">
-                          &quot;{plan.sourceSprintName}&quot; ↔ &quot;{plan.targetSprintName}&quot;
+                          스프린트 {plan.sprintYearMonths.length}개 (
+                          {plan.sprintYearMonths.map(formatYearMonthLabel).join(', ')})
                         </span>
                       </h2>
                     )}

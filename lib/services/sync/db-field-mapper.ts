@@ -152,11 +152,11 @@ export interface FieldMapOptions {
    */
   createMissingVersions?: boolean;
   /**
-   * 비교/쓰기 기준 스프린트의 연월(YYYYMM).
+   * 비교/쓰기 범위에 든 스프린트 연월 목록(YYYYMM).
    * 티켓이 여러 스프린트에 속해 있을 때 어느 스프린트를 옮길지 정한다.
-   * 없으면 active 스프린트를 우선한다. (pickSprint 참고)
+   * 없으면 active 스프린트를 우선한다. (pickScopedSprint 참고)
    */
-  sprintYearMonth?: string | null;
+  sprintYearMonths?: readonly string[] | null;
 }
 
 /**
@@ -304,7 +304,7 @@ export async function mapFieldsFromDb(
           fehgFields[source_field] as
             | Array<{ id: number; name: string; state?: string }>
             | undefined,
-          options?.sprintYearMonth
+          options?.sprintYearMonths
         );
 
         if (sprint?.name) {

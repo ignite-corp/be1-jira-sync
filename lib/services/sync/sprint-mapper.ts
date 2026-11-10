@@ -7,7 +7,7 @@ import {
   convertToFullYearMonth,
   extractSprintPeriod,
   formatYearMonth,
-  sprintYearMonthOf,
+  pickScopedSprint,
 } from './sprint-name';
 
 // 이름/연월 계산은 순수 모듈에 모여 있다. 여기서 다시 내보내 기존 import 를 깨지 않는다.
@@ -144,30 +144,15 @@ export async function findSprintByYearMonth(
 }
 
 /**
- * 스프린트 필드(배열)에서 기준 스프린트 하나를 고른다.
- *
- * 티켓은 여러 스프린트에 속할 수 있고 배열 순서는 보장되지 않는다.
- * (예: BEDEV1-176 = [202608(closed), 202609(active), 202606(closed)])
- * `[0]` 을 쓰면 닫힌 지난 스프린트가 잡혀 대상에서 이름을 못 찾는다 —
- * 대상 보드 조회는 state=active,future 라 닫힌 스프린트가 없다.
- *
- * 고르는 순서는 **비교 대상 연월 → active → 첫 번째** 다.
- * 비교를 미래 스프린트로 돌리면 active 는 이번 달 스프린트라 기준이 어긋나므로,
- * 지금 보고 있는 연월의 스프린트가 있으면 그것이 먼저다.
- * field-canonicalizer 의 canonicalizeSprint 와 같은 규칙이어야 한다.
- * (규칙이 다르면 비교가 매퍼가 쓰지 않는 값을 보고 거짓 diff 를 낸다)
+ * 티켓의 스프린트 필드(배열)에서 기준 스프린트 하나를 고른다.
+ * 규칙은 pickScopedSprint 에 있다 (비교 범위 안의 연월 → active → 첫 번째).
  */
 export function pickSprint(
   sprints: Array<{ id: number; name: string; state?: string }> | undefined | null,
-  preferredYearMonth?: string | null
+  preferredYearMonths?: readonly string[] | null
 ): { id: number; name: string } | null {
-  if (!Array.isArray(sprints) || sprints.length === 0) return null;
-  if (preferredYearMonth) {
-    const scoped = sprints.find((s) => sprintYearMonthOf(s?.name) === preferredYearMonth);
-    if (scoped) return scoped;
-  }
-  const active = sprints.find((s) => s?.state === 'active');
-  return active ?? sprints[0];
+  if (!Array.isArray(sprints)) return null;
+  return pickScopedSprint(sprints, preferredYearMonths);
 }
 
 /**

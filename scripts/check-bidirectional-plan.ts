@@ -21,6 +21,7 @@ process.env.BATCH_MODE = 'true';
 import { dbServer } from '@/lib/db';
 import { SyncLogger } from '@/lib/services/sync/logger';
 import { BidirectionalOrchestrator } from '@/lib/services/sync/bidirectional-orchestrator';
+import { selectableYearMonths } from '@/lib/services/sync/sprint-name';
 
 interface ProfileRow {
   id: string;
@@ -71,15 +72,23 @@ async function main() {
   const args = process.argv.slice(2);
   const userIdx = args.indexOf('--user');
   const userName = userIdx >= 0 ? args[userIdx + 1] : undefined;
-  // --sprint 202612 처럼 비교할 연월을 줄 수 있다 (없으면 이번 달)
+  // --sprint 202612 (특정 달) 또는 --months 6 (이번 달 ~ +6개월). 없으면 이번 달만.
   const sprintIdx = args.indexOf('--sprint');
-  const yearMonth = sprintIdx >= 0 ? args[sprintIdx + 1] : undefined;
+  const monthsIdx = args.indexOf('--months');
+  const yearMonths =
+    sprintIdx >= 0
+      ? [args[sprintIdx + 1]]
+      : monthsIdx >= 0
+        ? selectableYearMonths(Number(args[monthsIdx + 1]))
+        : undefined;
   const targetFilter = args.filter(
     (a, i) =>
       a !== '--user' &&
       a !== '--sprint' &&
+      a !== '--months' &&
       i !== userIdx + 1 &&
-      i !== sprintIdx + 1
+      i !== sprintIdx + 1 &&
+      i !== monthsIdx + 1
   )[0];
 
   let assigneeAccountId = '';
@@ -107,7 +116,7 @@ async function main() {
 
   if (!targetFilter) {
     console.warn(
-      '\n대상 프로젝트와 담당자를 주면 계획을 세운다. 예: ... check-bidirectional-plan.ts KQ --user 정용석 [--sprint 202612]'
+      '\n대상 프로젝트와 담당자를 주면 계획을 세운다. 예: ... check-bidirectional-plan.ts KQ --user 정용석 [--months 6 | --sprint 202612]'
     );
     return;
   }
@@ -132,10 +141,15 @@ async function main() {
   const orchestrator = new BidirectionalOrchestrator(logger);
 
   try {
-    const plan = await orchestrator.buildPlan(profile.id, { assigneeAccountId, yearMonth });
+    const plan = await orchestrator.buildPlan(profile.id, { assigneeAccountId, yearMonths });
 
     console.warn('\n=== 결과 ===');
-    console.warn(`  스프린트: "${plan.sourceSprintName}" ↔ "${plan.targetSprintName}"`);
+    console.warn(
+      `  스프린트 ${plan.sprintYearMonths.length}개: ` +
+        plan.sprintYearMonths
+          .map((_ym, i) => `"${plan.sourceSprintNames[i]}" ↔ "${plan.targetSprintNames[i]}"`)
+          .join(', ')
+    );
     console.warn(`  연결 방식: ${plan.sameSite ? '같은 사이트(Blocks 링크)' : '다른 사이트(link field)'}`);
     console.warn(`  ${plan.targetProjectKey} 에 생성: ${plan.createInTarget.length}건`);
     for (const i of plan.createInTarget) console.warn(`      ${i.ticket.key}  ${i.ticket.summary}`);

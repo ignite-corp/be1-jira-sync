@@ -52,3 +52,49 @@ export function selectableYearMonths(futureCount = 6, now: Date = new Date()): s
   const base = formatYearMonth(now);
   return Array.from({ length: futureCount + 1 }, (_, i) => addMonths(base, i));
 }
+
+/** 스프린트 배열에서 하나를 고를 때 쓰는 최소 형태 */
+interface SprintLike {
+  name?: string;
+  state?: string;
+}
+
+/**
+ * 스프린트 배열에서 기준 스프린트 하나를 고른다.
+ *
+ * 티켓은 여러 스프린트에 속할 수 있고 배열 순서는 보장되지 않는다.
+ * (예: BEDEV1-176 = [202608(closed), 202609(active), 202606(closed)])
+ *
+ * 고르는 순서는 **비교 범위 안의 연월 → active → 첫 번째** 다.
+ *  - 비교 범위(여러 달)를 주면 그 안의 스프린트만 후보가 되고,
+ *    후보가 여럿이면 active 를, 없으면 가장 이른 달을 쓴다.
+ *  - 범위를 주지 않거나 범위 안에 없으면 예전 규칙(active 우선)으로 떨어진다.
+ *
+ * 매핑(pickSprint)과 비교(canonicalizeSprint)가 **반드시 같은 규칙**을 써야 해서
+ * 여기 한 곳에 모아 둔다. (규칙이 다르면 매퍼가 쓰지 않는 값을 보고 거짓 diff 가 난다)
+ */
+export function pickScopedSprint<T extends SprintLike>(
+  sprints: readonly T[],
+  yearMonths?: readonly string[] | null
+): T | null {
+  if (sprints.length === 0) return null;
+
+  if (yearMonths && yearMonths.length > 0) {
+    const scope = new Set(yearMonths);
+    const scoped = sprints.filter((s) => {
+      const ym = sprintYearMonthOf(s?.name);
+      return ym !== null && scope.has(ym);
+    });
+
+    if (scoped.length > 0) {
+      const active = scoped.find((s) => s?.state === 'active');
+      if (active) return active;
+      return [...scoped].sort((a, b) =>
+        (sprintYearMonthOf(a?.name) ?? '').localeCompare(sprintYearMonthOf(b?.name) ?? '')
+      )[0];
+    }
+  }
+
+  const active = sprints.find((s) => s?.state === 'active');
+  return active ?? sprints[0];
+}

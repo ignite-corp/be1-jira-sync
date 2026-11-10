@@ -56,11 +56,11 @@ export interface TicketComparison {
 
 export interface CompareOptions {
   /**
-   * 비교 중인 스프린트의 연월(YYYYMM).
+   * 비교 범위에 든 스프린트 연월 목록(YYYYMM).
    * 티켓이 여러 스프린트에 속해 있을 때 기준 스프린트를 고르는 데 쓴다.
    * (미래 스프린트를 비교할 때 active 스프린트가 잡혀 거짓 diff 가 나는 것을 막는다)
    */
-  sprintYearMonth?: string | null;
+  sprintYearMonths?: readonly string[] | null;
 }
 
 /**
@@ -97,10 +97,10 @@ export function compareMappedFields(
     const kind = resolveFieldKind(mapping.transform_type, mapping.source_field);
 
     const source = canonicalizeFieldValue(kind, mappedSourceFields[mapping.target_field], {
-      sprintYearMonth: options?.sprintYearMonth,
+      sprintYearMonths: options?.sprintYearMonths,
     });
     const target = canonicalizeFieldValue(kind, targetFields[mapping.target_field], {
-      sprintYearMonth: options?.sprintYearMonth,
+      sprintYearMonths: options?.sprintYearMonths,
     });
 
     // 양쪽 다 비어 있으면 비교할 것이 없다.

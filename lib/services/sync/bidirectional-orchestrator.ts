@@ -24,6 +24,7 @@ import {
   formatYearMonth,
   initSprintCache,
 } from './sprint-mapper';
+import type { SprintInfo } from './types';
 import {
   compareMappedFields,
   suggestDirection,
@@ -83,10 +84,12 @@ export interface BidirectionalPlan {
   targetInstance: 'ignite' | 'hmg';
   /** 같은 Atlassian 사이트인가 (연결 판정 방식이 갈린다 - 결정 1) */
   sameSite: boolean;
-  /** 비교 기준 연월 (YYYYMM) - 현재 월일 수도, 사람이 고른 미래 월일 수도 있다 */
-  sprintYearMonth: string;
-  sourceSprintName: string;
-  targetSprintName: string;
+  /** 실제로 비교한 연월 목록 (YYYYMM) - 양쪽에 스프린트가 다 있는 달만 들어간다 */
+  sprintYearMonths: string[];
+  /** 비교한 소스 스프린트 이름들 (연월 순) */
+  sourceSprintNames: string[];
+  /** 비교한 대상 스프린트 이름들 (연월 순) */
+  targetSprintNames: string[];
   /** 요구사항 1: BEDEV1 에만 있음 → 대상에 생성 */
   createInTarget: MissingItem[];
   /** 요구사항 2: 대상에만 있음 → BEDEV1 에 생성 */
@@ -119,10 +122,11 @@ export interface BuildPlanOptions {
   /** 소스 인스턴스 기준 담당자 accountId. 양쪽 조회를 이 담당자로 한정한다. */
   assigneeAccountId: string;
   /**
-   * 비교할 스프린트의 연월 (YYYYMM, 예: "202611").
-   * 없으면 현재 월. 현재 월보다 미래 월을 줘도 된다 (미리 계획된 스프린트 비교).
+   * 비교할 스프린트의 연월 목록 (YYYYMM, 예: ["202611", "202612"]).
+   * 없으면 현재 월 하나만. 현재 월부터 미래 N개월까지 한 번에 줄 수 있다.
+   * 양쪽에 스프린트가 다 있는 달만 실제 비교 대상이 된다.
    */
-  yearMonth?: string;
+  yearMonths?: readonly string[];
   /** 현재 월 판정 기준 시각 (테스트용) */
   now?: Date;
 }
@@ -159,8 +163,11 @@ export class BidirectionalOrchestrator {
     this.warnedMapping.clear();
 
     const now = options.now ?? new Date();
-    // 고르지 않으면 현재 월. 미래 월을 고르면 그 달의 스프린트끼리 비교한다.
-    const yearMonth = options.yearMonth ?? formatYearMonth(now);
+    // 고르지 않으면 현재 월 하나. 범위를 주면 그 달들의 스프린트를 모두 비교한다.
+    const requestedYearMonths =
+      options.yearMonths && options.yearMonths.length > 0
+        ? [...options.yearMonths].sort()
+        : [formatYearMonth(now)];
 
     const profile = await getSyncProfileInfo(profileId);
     if (!profile) {
@@ -186,30 +193,64 @@ export class BidirectionalOrchestrator {
       targetInstance
     );
 
-    // 1. 양쪽에서 고른 연월의 스프린트 확인 (결정 3: 없으면 오류로 멈춘다)
-    const [sourceSprint, targetSprint] = await Promise.all([
-      findSprintByYearMonth(profile.sourceProjectKey, sourceInstance, yearMonth),
-      findSprintByYearMonth(profile.targetProjectKey, targetInstance, yearMonth),
-    ]);
+    // 1. 고른 달들의 스프린트를 양쪽에서 찾는다.
+    //
+    // 결정 3 유지: 스프린트가 없으면 다른 스프린트로 대체하거나 전체를 훑지 않는다.
+    // 다만 범위 비교에서는 **한쪽에만 없는 달은 건너뛰고** 나머지 달을 계속 본다.
+    // (미래 스프린트는 아직 안 만들어진 달이 섞여 있는 것이 정상이다)
+    // 쓸 수 있는 달이 하나도 없을 때만 오류로 멈춘다.
+    const sprintPairs: Array<{
+      yearMonth: string;
+      source: SprintInfo;
+      target: SprintInfo;
+    }> = [];
 
-    if (!sourceSprint) {
-      throw new SprintNotFoundError(
+    for (const yearMonth of requestedYearMonths) {
+      const [source, target] = await Promise.all([
+        findSprintByYearMonth(profile.sourceProjectKey, sourceInstance, yearMonth),
+        findSprintByYearMonth(profile.targetProjectKey, targetInstance, yearMonth),
+      ]);
+
+      if (source && target) {
+        sprintPairs.push({ yearMonth, source, target });
+        continue;
+      }
+
+      const missing = [
+        !source ? `${profile.sourceProjectKey} "${buildTargetSprintName(profile.sourceProjectKey, yearMonth)}"` : null,
+        !target ? `${profile.targetProjectKey} "${buildTargetSprintName(profile.targetProjectKey, yearMonth)}"` : null,
+      ].filter(Boolean);
+
+      this.logger.info(`${yearMonth}: 스프린트가 없어 건너뜁니다 (${missing.join(', ')})`);
+    }
+
+    if (sprintPairs.length === 0) {
+      // 어느 달도 양쪽에 다 있지 않다 - 가장 앞선 달 기준으로 무엇이 없는지 알린다.
+      const firstYearMonth = requestedYearMonths[0];
+      const firstSource = await findSprintByYearMonth(
         profile.sourceProjectKey,
-        buildTargetSprintName(profile.sourceProjectKey, yearMonth)
+        sourceInstance,
+        firstYearMonth
       );
-    }
-    if (!targetSprint) {
       throw new SprintNotFoundError(
-        profile.targetProjectKey,
-        buildTargetSprintName(profile.targetProjectKey, yearMonth)
+        firstSource ? profile.targetProjectKey : profile.sourceProjectKey,
+        buildTargetSprintName(
+          firstSource ? profile.targetProjectKey : profile.sourceProjectKey,
+          firstYearMonth
+        )
       );
     }
+
+    const yearMonths = sprintPairs.map((p) => p.yearMonth);
+    const sourceSprintNames = sprintPairs.map((p) => p.source.name);
+    const targetSprintNames = sprintPairs.map((p) => p.target.name);
 
     this.logger.info(
-      `스프린트 확인: "${sourceSprint.name}"(id=${sourceSprint.id}) ↔ "${targetSprint.name}"(id=${targetSprint.id})`
+      `스프린트 확인 (${sprintPairs.length}개 달): ` +
+        sprintPairs.map((p) => `"${p.source.name}" ↔ "${p.target.name}"`).join(', ')
     );
 
-    // 2. 양쪽 티켓 조회 (비교 스프린트 + 담당자로 한정)
+    // 2. 양쪽 티켓 조회 (비교 범위의 스프린트 전체 + 담당자로 한정)
     //
     // 매핑에 지정된 필드를 조회 필드에 반드시 포함시킨다.
     // DEFAULT_FIELDS 에만 의존하면 timeoriginalestimate 같은 매핑 필드가 안 넘어와서
@@ -226,14 +267,14 @@ export class BidirectionalOrchestrator {
     const [sourceTickets, targetTickets] = await Promise.all([
       this.fetchSprintTickets(
         profile.sourceProjectKey,
-        sourceSprint.id,
+        sprintPairs.map((p) => p.source.id),
         sourceInstance,
         sourceAssigneeId,
         sourceExtraFields
       ),
       this.fetchSprintTickets(
         profile.targetProjectKey,
-        targetSprint.id,
+        sprintPairs.map((p) => p.target.id),
         targetInstance,
         targetAssigneeId,
         targetExtraFields
@@ -257,9 +298,9 @@ export class BidirectionalOrchestrator {
       sourceInstance,
       targetInstance,
       sameSite,
-      sprintYearMonth: yearMonth,
-      sourceSprintName: sourceSprint.name,
-      targetSprintName: targetSprint.name,
+      sprintYearMonths: yearMonths,
+      sourceSprintNames,
+      targetSprintNames,
       createInTarget: [],
       createInSource: [],
       conflicts: [],
@@ -297,7 +338,7 @@ export class BidirectionalOrchestrator {
           // (여기서 생성해 버리면 중복 티켓이 생긴다)
           plan.skipped.push({
             key: `${sourceTicket.key} → ${targetKey}`,
-            reason: `연결된 대상 티켓이 비교 스프린트("${targetSprint.name}") 밖입니다`,
+            reason: `연결된 대상 티켓이 비교 범위(${targetSprintNames.join(', ')}) 밖입니다`,
           });
           continue;
         }
@@ -308,7 +349,7 @@ export class BidirectionalOrchestrator {
           targetTicket,
           profileId,
           profile,
-          yearMonth
+          yearMonths
         );
 
         const item: ConflictItem = {
@@ -343,7 +384,7 @@ export class BidirectionalOrchestrator {
           // 소스에는 연결이 있으나 소스의 비교 스프린트 밖
           plan.skipped.push({
             key: `${targetTicket.key} → ${inwardSourceKeys.join(', ')}`,
-            reason: `연결된 ${profile.sourceProjectKey} 티켓이 비교 스프린트("${sourceSprint.name}") 밖입니다`,
+            reason: `연결된 ${profile.sourceProjectKey} 티켓이 비교 범위(${sourceSprintNames.join(', ')}) 밖입니다`,
           });
           continue;
         }
@@ -401,16 +442,20 @@ export class BidirectionalOrchestrator {
     return mapped;
   }
 
-  /** 스프린트 + 담당자 단위 티켓 조회 */
+  /**
+   * 스프린트(여러 개 가능) + 담당자 단위 티켓 조회.
+   * 여러 달을 비교할 때도 질의는 한 번만 날린다 (sprint IN (...)).
+   * 같은 티켓이 범위 안 두 스프린트에 걸쳐 있어도 Jira 가 한 번만 돌려준다.
+   */
   private async fetchSprintTickets(
     projectKey: string,
-    sprintId: number,
+    sprintIds: number[],
     instance: 'ignite' | 'hmg',
     assigneeAccountId: string,
     extraFields: string[]
   ): Promise<JiraIssue[]> {
     const jql =
-      `project = ${projectKey} AND sprint = ${sprintId} ` +
+      `project = ${projectKey} AND sprint IN (${sprintIds.join(', ')}) ` +
       `AND assignee = "${assigneeAccountId}" ORDER BY updated DESC`;
     const result = await jira[instance].searchAllIssues(jql, extraFields);
 
@@ -427,7 +472,7 @@ export class BidirectionalOrchestrator {
     targetTicket: JiraIssue,
     profileId: string,
     profile: SyncProfileInfo,
-    sprintYearMonth: string
+    sprintYearMonths: readonly string[]
   ): Promise<TicketComparison> {
     const mappings = await getFieldMappings(profileId);
     // 이름으로 해석하지 못해 빠진 값(스프린트/버전)을 로그로 드러낸다.
@@ -438,7 +483,7 @@ export class BidirectionalOrchestrator {
       profileId,
       profile.targetProjectKey,
       {
-        sprintYearMonth,
+        sprintYearMonths,
         onWarning: (message) => {
           if (this.warnedMapping.has(message)) return;
           this.warnedMapping.add(message);
@@ -468,7 +513,7 @@ export class BidirectionalOrchestrator {
     }
 
     return compareMappedFields(mappings, mappedSourceFields, targetTicket.fields, status, {
-      sprintYearMonth,
+      sprintYearMonths,
     });
   }
 
