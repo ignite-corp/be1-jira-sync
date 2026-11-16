@@ -575,7 +575,7 @@ export default function HomePage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="flex-1 overflow-hidden p-0">
-              <ScrollArea className="h-full px-6 pb-6">
+              <ScrollArea horizontal className="h-full px-6 pb-6">
                 {/* 대상 선택 */}
                 <div className="flex flex-wrap gap-2 pb-4">
                   <Select
