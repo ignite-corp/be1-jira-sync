@@ -745,6 +745,14 @@ check(
   'Dev Task'
 );
 check(
+  'MEMBERSHIP 일반 작업은 Dev Task 로 고정 (이름 순서에 기대지 않는다)',
+  chooseCreateIssueType('MEMBERSHIP', [
+    { id: '1', name: '작업' },
+    { id: '2', name: 'Dev Task' },
+  ])?.name,
+  'Dev Task'
+);
+check(
   '하위작업 타입이 하나뿐이면 이름이 달라도 그걸 쓴다',
   chooseCreateIssueType('ANY', [
     { id: '1', name: '작업' },

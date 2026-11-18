@@ -290,6 +290,7 @@ export const HMG_CUSTOM_FIELDS = {
  */
 export const CREATE_ISSUE_TYPE_MAP: Record<string, string> = {
   KQ: '개발처리',
+  MEMBERSHIP: 'Dev Task',
 };
 
 /**
