@@ -162,6 +162,7 @@ export class BidirectionalOrchestrator {
     initSprintCache();
     this.missingStatusMapping.clear();
     this.warnedMapping.clear();
+    this.parentCache.clear();
 
     const now = options.now ?? new Date();
     // 고르지 않으면 현재 월 하나. 범위를 주면 그 달들의 스프린트를 모두 비교한다.
@@ -289,6 +290,7 @@ export class BidirectionalOrchestrator {
 
     // 3. 연결 판정 (결정 1: 새 테이블 없이 현재 규칙 그대로)
     const targetByKey = new Map(targetTickets.map((t) => [t.key, t]));
+    const sourceByKey = new Map(sourceTickets.map((t) => [t.key, t]));
     const linkedTargetKeys = new Set<string>();
 
     const plan: BidirectionalPlan = {
@@ -321,7 +323,13 @@ export class BidirectionalOrchestrator {
         // 단, BEDEV1 은 모든 프로젝트의 중앙 관리처라 티켓마다 어느 프로젝트 것인지
         // 라벨로 구분한다. 이 프로필의 대상 프로젝트 라벨이 없으면 남의 프로젝트 티켓이다.
         // (예: 라벨이 AUTOWAY 인 티켓은 KQ 비교 화면에 뜨면 안 된다)
-        if (!hasProjectLabel(sourceTicket.fields.labels, profile.targetProjectKey)) {
+        const belongs = await this.belongsToProfile(
+          sourceTicket,
+          profile,
+          sourceInstance,
+          sourceByKey
+        );
+        if (!belongs) {
           unlabeledCount++;
           continue;
         }
@@ -410,7 +418,8 @@ export class BidirectionalOrchestrator {
     if (unlabeledCount > 0) {
       this.logger.info(
         `${profile.sourceProjectKey}: 라벨이 "${profile.targetProjectKey}" 가 아닌 미연결 티켓 ` +
-          `${unlabeledCount}건은 이 프로필 대상이 아니라 제외했습니다`
+          `${unlabeledCount}건은 이 프로필 대상이 아니라 제외했습니다 ` +
+          `(하위 작업은 부모의 라벨로 판정합니다)`
       );
     }
 
@@ -446,6 +455,55 @@ export class BidirectionalOrchestrator {
     }
 
     return mapped;
+  }
+
+  /**
+   * 이 소스 티켓이 이 프로필(대상 프로젝트)의 것인지 판정한다.
+   *
+   * 기본은 프로젝트 라벨이다. 다만 **하위 작업에는 라벨을 달지 않는 것이 보통**이라
+   * (실측: BEDEV1-983 은 labels=[] 이고 부모 BEDEV1-971 에만 MEMBERSHIP 라벨이 있다)
+   * 라벨이 없는 하위 작업은 **부모의 라벨**을 따른다. 그러지 않으면 하위 작업이
+   * 조용히 비교 목록에서 빠져 "만들었는데 안 뜬다" 가 된다.
+   */
+  private async belongsToProfile(
+    ticket: JiraIssue,
+    profile: SyncProfileInfo,
+    sourceInstance: 'ignite' | 'hmg',
+    sourceByKey: Map<string, JiraIssue>
+  ): Promise<boolean> {
+    if (hasProjectLabel(ticket.fields.labels, profile.targetProjectKey)) return true;
+
+    if (classifyIssueKind(ticket.fields.issuetype) !== 'subtask') return false;
+
+    const parentKey = ticket.fields.parent?.key;
+    if (!parentKey) return false;
+
+    const parent =
+      sourceByKey.get(parentKey) ?? (await this.fetchParent(sourceInstance, parentKey));
+    if (!parent) return false;
+
+    return hasProjectLabel(parent.fields.labels, profile.targetProjectKey);
+  }
+
+  /** 부모 티켓 캐시 (계획 수립 1회 동안만 - 같은 부모를 여러 하위 작업이 공유한다) */
+  private parentCache = new Map<string, JiraIssue | null>();
+
+  /** 부모 티켓 조회 */
+  private async fetchParent(
+    instance: 'ignite' | 'hmg',
+    parentKey: string
+  ): Promise<JiraIssue | null> {
+    const cacheKey = `${instance}:${parentKey}`;
+    if (this.parentCache.has(cacheKey)) return this.parentCache.get(cacheKey)!;
+
+    const result = await jira[instance].searchAllIssues(`key = ${parentKey}`);
+    const parent = result.success ? (result.data?.issues?.[0] ?? null) : null;
+
+    if (!parent) {
+      this.logger.warning(`${parentKey}: 부모 티켓 조회 실패 - 하위 작업 판정에서 제외합니다`);
+    }
+    this.parentCache.set(cacheKey, parent);
+    return parent;
   }
 
   /**
