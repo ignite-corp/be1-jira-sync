@@ -311,6 +311,30 @@ export const CREATE_ISSUE_TYPE_PREFERENCE = [
   'Dev Task',
 ] as const;
 
+/**
+ * 프로젝트별 **하위 작업** 생성 시 사용할 이슈 타입 이름
+ *
+ * 하위 작업을 일반 작업으로 만들면 부모와의 관계가 끊기므로,
+ * 소스가 하위 작업이면 대상에서도 반드시 하위 작업 계열로 만든다.
+ * (예: HMG 멤버십은 "Dev Sub-task")
+ */
+export const CREATE_SUBTASK_TYPE_MAP: Record<string, string> = {
+  MEMBERSHIP: 'Dev Sub-task',
+};
+
+/** 하위 작업 타입 선호 순서 (앞에 있을수록 우선) */
+export const CREATE_SUBTASK_TYPE_PREFERENCE = [
+  'Dev Sub-task',
+  '하위작업',
+  '하위 작업',
+  'Sub-task',
+  'Subtask',
+  '서브태스크',
+] as const;
+
+/** 에픽 타입 선호 순서 (앞에 있을수록 우선) */
+export const CREATE_EPIC_TYPE_PREFERENCE = ['에픽', 'Epic'] as const;
+
 // 보드 ID (스프린트 조회용)
 export const BOARD_IDS = {
   FEHG: 251,

@@ -61,6 +61,12 @@ export interface CompareOptions {
    * (미래 스프린트를 비교할 때 active 스프린트가 잡혀 거짓 diff 가 나는 것을 막는다)
    */
   sprintYearMonths?: readonly string[] | null;
+  /**
+   * 스프린트 비교를 건너뛴다.
+   * 하위 작업/에픽에는 스프린트 필드가 없어서(하위 작업은 부모의 스프린트를 따른다)
+   * 비교에 넣으면 "소스에만 값이 있음" 이라는, 고칠 방법이 없는 diff 가 계속 뜬다.
+   */
+  skipSprint?: boolean;
 }
 
 /**
@@ -95,6 +101,7 @@ export function compareMappedFields(
 
   for (const mapping of mappings) {
     const kind = resolveFieldKind(mapping.transform_type, mapping.source_field);
+    if (options?.skipSprint && kind === 'sprint') continue;
 
     const source = canonicalizeFieldValue(kind, mappedSourceFields[mapping.target_field], {
       sprintYearMonths: options?.sprintYearMonths,

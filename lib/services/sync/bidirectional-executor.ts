@@ -8,16 +8,24 @@
 import { JiraIssue, JiraIssueCreatePayload } from '@/lib/types/jira';
 import { SyncLogger } from './logger';
 import { jira } from '@/lib/services/jira';
-import { mapFieldsFromDb, getSyncProfileInfo, type SyncProfileInfo } from './db-field-mapper';
+import {
+  getFieldMappings,
+  getSyncProfileInfo,
+  mapFieldsFromDb,
+  type SyncProfileInfo,
+} from './db-field-mapper';
 import { mapFieldsToSource } from './reverse-field-mapper';
 import { sanitizeWritePayload } from './write-payload';
 import { withProjectLabel } from './project-label';
 import { JIRA_ENDPOINTS, IGNITE_CUSTOM_FIELDS } from '@/lib/constants/jira';
 import {
   chooseCreateIssueType,
+  classifyIssueKind,
   getConfiguredIssueTypeName,
+  type IssueKind,
   type JiraIssueTypeOption,
 } from './issue-type-resolver';
+import { extractLinkFieldKeys, findBlocksOutwardKeys, findLinkedSourceKeys } from './link-resolver';
 import {
   getSourceStatusIdFromProfile,
   getTargetStatusIdFromProfile,
@@ -76,17 +84,48 @@ export class BidirectionalExecutor {
         })
       );
 
+      // 소스의 계층(일반/하위작업/에픽)을 그대로 보존한다.
+      // 하위 작업을 일반 작업으로 만들면 부모와의 관계가 끊기고, 에픽도 마찬가지다.
+      const kind = classifyIssueKind(sourceTicket.fields.issuetype);
+
       const issuetype = await this.resolveCreateIssueType(
         profile.targetProjectKey,
-        targetInstance
+        targetInstance,
+        kind
       );
+      if (!issuetype) {
+        throw new Error(
+          `${profile.targetProjectKey} 에 ${kindLabel(kind)} 타입이 없어 생성하지 못했습니다`
+        );
+      }
+
+      // 하위 작업은 부모 없이 만들 수 없다. 부모가 대상에 먼저 있어야 한다.
+      let parent: { key: string } | undefined;
+      if (kind === 'subtask') {
+        const parentKey = await this.resolveTargetParentKey(sourceTicket, profile);
+        if (!parentKey) {
+          throw new Error(
+            `부모 티켓(${sourceTicket.fields.parent?.key ?? '알 수 없음'})이 아직 ` +
+              `${profile.targetProjectKey} 에 없습니다. 부모를 먼저 생성해 주세요.`
+          );
+        }
+        parent = { key: parentKey };
+      }
+
+      // 하위 작업/에픽에는 스프린트 필드가 없다 (하위 작업은 부모의 스프린트를 따른다).
+      // 그대로 보내면 "Field cannot be set" 으로 생성 자체가 실패한다.
+      const createFields =
+        kind === 'standard'
+          ? mappedFields
+          : await this.withoutSprintFields(mappedFields, profileId, 'target');
 
       const payload: JiraIssueCreatePayload = {
         fields: {
           project: { key: profile.targetProjectKey },
           issuetype,
           summary: sourceTicket.fields.summary,
-          ...mappedFields,
+          ...createFields,
+          ...(parent ? { parent } : {}),
         },
       };
 
@@ -164,17 +203,44 @@ export class BidirectionalExecutor {
         profile.targetProjectKey
       );
 
+      // 반대 방향도 계층을 보존한다 (대상의 하위 작업 → 소스의 하위 작업)
+      const kind = classifyIssueKind(targetTicket.fields.issuetype);
+
       const issuetype = await this.resolveCreateIssueType(
         profile.sourceProjectKey,
-        sourceInstance
+        sourceInstance,
+        kind
       );
+      if (!issuetype) {
+        throw new Error(
+          `${profile.sourceProjectKey} 에 ${kindLabel(kind)} 타입이 없어 생성하지 못했습니다`
+        );
+      }
+
+      let parent: { key: string } | undefined;
+      if (kind === 'subtask') {
+        const parentKey = await this.resolveSourceParentKey(targetTicket, profile);
+        if (!parentKey) {
+          throw new Error(
+            `부모 티켓(${targetTicket.fields.parent?.key ?? '알 수 없음'})에 대응하는 ` +
+              `${profile.sourceProjectKey} 티켓이 없습니다. 부모를 먼저 생성해 주세요.`
+          );
+        }
+        parent = { key: parentKey };
+      }
+
+      const createFields =
+        kind === 'standard'
+          ? mappedFields
+          : await this.withoutSprintFields(mappedFields, profileId, 'source');
 
       const payload: JiraIssueCreatePayload = {
         fields: {
           project: { key: profile.sourceProjectKey },
           issuetype,
           summary: targetTicket.fields.summary,
-          ...mappedFields,
+          ...createFields,
+          ...(parent ? { parent } : {}),
         },
       };
 
@@ -236,18 +302,25 @@ export class BidirectionalExecutor {
     const targetInstance = normalizeInstance(profile.targetInstance);
 
     const warnings: string[] = [];
+    // 하위 작업/에픽에는 스프린트 필드가 없다 - 실으면 "cannot be set" 으로 수정이 통째로 실패한다
+    const nonStandardPair =
+      classifyIssueKind(sourceTicket.fields.issuetype) !== 'standard' ||
+      classifyIssueKind(targetTicket.fields.issuetype) !== 'standard';
 
     try {
       if (direction === 'sourceToTarget') {
         this.logger.info(`${sourceTicket.key} → ${targetTicket.key}: 덮어쓰기 시작...`);
 
-        const fields = sanitizeWritePayload(
+        const mapped = sanitizeWritePayload(
           await mapFieldsFromDb(sourceTicket, profileId, profile.targetProjectKey, {
             sprintYearMonths,
             onWarning: (w) => warnings.push(w),
             createMissingVersions: true,
           })
         );
+        const fields = nonStandardPair
+          ? await this.withoutSprintFields(mapped, profileId, 'target')
+          : mapped;
         const result = await jira[targetInstance].updateIssueFields(targetTicket.key, fields);
 
         if (!result.success) {
@@ -270,13 +343,16 @@ export class BidirectionalExecutor {
       } else {
         this.logger.info(`${targetTicket.key} → ${sourceTicket.key}: 덮어쓰기 시작...`);
 
-        const fields = sanitizeWritePayload(
+        const mapped = sanitizeWritePayload(
           await mapFieldsToSource(targetTicket, profileId, {
             sprintYearMonths,
             onWarning: (w) => warnings.push(w),
             createMissingVersions: true,
           })
         );
+        const fields = nonStandardPair
+          ? await this.withoutSprintFields(mapped, profileId, 'source')
+          : mapped;
         const result = await jira[sourceInstance].updateIssueFields(sourceTicket.key, fields);
 
         if (!result.success) {
@@ -443,17 +519,22 @@ export class BidirectionalExecutor {
   /**
    * 생성용 issuetype 결정
    * 프로젝트마다 허용 이슈 타입 이름/로캘이 달라 name 하드코딩이 깨지므로 id 를 우선 쓴다.
-   * (HMGSyncService.resolveCreateIssueType 과 같은 방식)
+   *
+   * kind 는 소스 티켓의 계층이다. 하위작업/에픽은 그 계층 안에서만 고르고,
+   * 못 찾으면 **null 을 돌려준다** - 일반 작업으로 떨어뜨리면 계층이 깨진 티켓이 생긴다.
+   * (일반 티켓만 예전처럼 name "작업" 으로 폴백한다)
    */
   private async resolveCreateIssueType(
     projectKey: string,
-    instance: 'ignite' | 'hmg'
-  ): Promise<{ id: string } | { name: string }> {
-    const cacheKey = `${instance}:${projectKey}`;
+    instance: 'ignite' | 'hmg',
+    kind: IssueKind = 'standard'
+  ): Promise<{ id: string } | { name: string } | null> {
+    const cacheKey = `${instance}:${projectKey}:${kind}`;
     const cached = createIssueTypeCache.get(cacheKey);
     if (cached) return cached;
 
-    const fallback = { name: '작업' } as const;
+    // 계층이 깨지는 것보다 실패가 낫다 - 하위작업/에픽에는 폴백을 두지 않는다
+    const fallback = kind === 'standard' ? ({ name: '작업' } as const) : null;
 
     try {
       const projectResult = await jira[instance].getProject(projectKey);
@@ -462,23 +543,25 @@ export class BidirectionalExecutor {
 
       if (!issueTypes || issueTypes.length === 0) {
         this.logger.warning(
-          `${projectKey}: issueTypes 조회 실패 → issuetype name "작업" 으로 폴백`
+          `${projectKey}: issueTypes 조회 실패 → ${
+            fallback ? 'issuetype name "작업" 으로 폴백' : `${kindLabel(kind)} 생성 불가`
+          }`
         );
         return fallback;
       }
 
-      const chosen = chooseCreateIssueType(projectKey, issueTypes);
+      const chosen = chooseCreateIssueType(projectKey, issueTypes, kind);
       if (!chosen) {
         // 임의의 타입을 고르면 엉뚱한 타입(예: 버그)으로 티켓이 만들어진다.
         this.logger.error(
-          `${projectKey}: 쓸 수 있는 이슈 타입이 없습니다 ` +
-            `(찾은 것: 작업/개발처리/Dev Task 중 없음). ` +
-            `lib/constants/jira.ts 의 CREATE_ISSUE_TYPE_MAP 에 "${projectKey}" 를 지정해 주세요.`
+          `${projectKey}: 쓸 수 있는 ${kindLabel(kind)} 이슈 타입이 없습니다 ` +
+            `(프로젝트의 타입: ${issueTypes.map((t) => t.name).join(', ')}). ` +
+            `lib/constants/jira.ts 의 이슈 타입 상수에 "${projectKey}" 를 지정해 주세요.`
         );
         return fallback;
       }
 
-      const configuredName = getConfiguredIssueTypeName(projectKey);
+      const configuredName = getConfiguredIssueTypeName(projectKey, kind);
       if (configuredName && chosen.reason !== 'configured') {
         this.logger.warning(
           `${projectKey}: 지정된 이슈 타입 "${configuredName}" 가 프로젝트에 없어 "${chosen.name}" 로 대체합니다`
@@ -488,15 +571,134 @@ export class BidirectionalExecutor {
       const resolved = { id: chosen.id };
       createIssueTypeCache.set(cacheKey, resolved);
       this.logger.info(
-        `${projectKey}: issuetype 선택 → "${chosen.name}" (id=${chosen.id}, 근거=${chosen.reason})`
+        `${projectKey}: ${kindLabel(kind)} issuetype 선택 → "${chosen.name}" (id=${chosen.id}, 근거=${chosen.reason})`
       );
       return resolved;
     } catch (error) {
       this.logger.warning(
-        `${projectKey}: issuetype 조회 중 예외 → name 폴백 - ${toMessage(error)}`
+        `${projectKey}: issuetype 조회 중 예외 → ${
+          fallback ? 'name 폴백' : `${kindLabel(kind)} 생성 불가`
+        } - ${toMessage(error)}`
       );
       return fallback;
     }
+  }
+
+  /**
+   * 하위 작업의 부모를 대상 프로젝트에서 찾는다.
+   *
+   * 연결 판정은 일반 티켓과 똑같은 규칙을 쓴다 (link-resolver).
+   *  - 같은 사이트: 부모의 Blocks outward 링크
+   *  - 다른 사이트: 부모의 link field 에 담긴 URL
+   * 부모가 아직 옮겨지지 않았으면 null - 호출부가 "부모 먼저" 라고 알린다.
+   */
+  private async resolveTargetParentKey(
+    sourceTicket: JiraIssue,
+    profile: SyncProfileInfo
+  ): Promise<string | null> {
+    const parentKey = sourceTicket.fields.parent?.key;
+    if (!parentKey) return null;
+
+    const sourceInstance = normalizeInstance(profile.sourceInstance);
+    const targetInstance = normalizeInstance(profile.targetInstance);
+    const linkField = profile.linkField || IGNITE_CUSTOM_FIELDS.HMG_JIRA_LINK;
+
+    const parent = await this.fetchIssue(sourceInstance, parentKey, [linkField]);
+    if (!parent) return null;
+
+    const keys =
+      sourceInstance === targetInstance
+        ? findBlocksOutwardKeys(parent, profile.targetProjectKey)
+        : extractLinkFieldKeys(parent, {
+            linkField: profile.linkField,
+            targetProjectKey: profile.targetProjectKey,
+          });
+
+    return keys[0] ?? null;
+  }
+
+  /**
+   * 하위 작업의 부모를 소스 프로젝트에서 찾는다 (역방향 생성).
+   *
+   * 같은 사이트면 부모의 inward 링크로 바로 보인다.
+   * 다른 사이트(HMG)는 역참조가 없어서, 소스 프로젝트에서 link field 가
+   * 그 부모를 가리키는 티켓을 찾아야 한다.
+   */
+  private async resolveSourceParentKey(
+    targetTicket: JiraIssue,
+    profile: SyncProfileInfo
+  ): Promise<string | null> {
+    const parentKey = targetTicket.fields.parent?.key;
+    if (!parentKey) return null;
+
+    const sourceInstance = normalizeInstance(profile.sourceInstance);
+    const targetInstance = normalizeInstance(profile.targetInstance);
+
+    if (sourceInstance === targetInstance) {
+      const parent = await this.fetchIssue(targetInstance, parentKey);
+      if (!parent) return null;
+      return findLinkedSourceKeys(parent, profile.sourceProjectKey)[0] ?? null;
+    }
+
+    // 다른 사이트: 소스에서 link field 로 되짚는다.
+    const linkField = profile.linkField || IGNITE_CUSTOM_FIELDS.HMG_JIRA_LINK;
+    const fieldNumber = linkField.replace(/^customfield_/, '');
+    const jql = `project = ${profile.sourceProjectKey} AND cf[${fieldNumber}] ~ "${parentKey}"`;
+
+    const result = await jira[sourceInstance].searchAllIssues(jql, [linkField]);
+    if (!result.success || !result.data) {
+      this.logger.warning(
+        `${parentKey}: ${profile.sourceProjectKey} 에서 부모 역참조 조회 실패 - ${result.error ?? ''}`
+      );
+      return null;
+    }
+
+    // 텍스트 검색이라 부분 일치가 섞일 수 있어 링크 값을 다시 확인한다
+    const matched = result.data.issues.find((issue) =>
+      extractLinkFieldKeys(issue, {
+        linkField: profile.linkField,
+        targetProjectKey: profile.targetProjectKey,
+      }).includes(parentKey)
+    );
+
+    return matched?.key ?? null;
+  }
+
+  /** 티켓 하나 조회 (매핑에 없는 필드도 받아야 해서 검색 API 를 쓴다) */
+  private async fetchIssue(
+    instance: 'ignite' | 'hmg',
+    issueKey: string,
+    extraFields: string[] = []
+  ): Promise<JiraIssue | null> {
+    const result = await jira[instance].searchAllIssues(`key = ${issueKey}`, extraFields);
+    if (!result.success || !result.data?.issues?.length) {
+      this.logger.warning(`${issueKey}: 조회 실패 - ${result.error ?? '결과 없음'}`);
+      return null;
+    }
+    return result.data.issues[0];
+  }
+
+  /**
+   * 스프린트 매핑 결과를 제거한다.
+   *
+   * 하위 작업은 부모의 스프린트를 따르고 에픽에는 스프린트가 없어서,
+   * 스프린트 필드를 실으면 "Field 'customfield_xxxxx' cannot be set" 으로 생성이 통째로 실패한다.
+   */
+  private async withoutSprintFields(
+    fields: Record<string, unknown>,
+    profileId: string,
+    side: 'source' | 'target'
+  ): Promise<Record<string, unknown>> {
+    const mappings = await getFieldMappings(profileId);
+    const out = { ...fields };
+
+    for (const mapping of mappings) {
+      if (mapping.transform_type !== 'sprint_map') continue;
+      const key = side === 'target' ? mapping.target_field : mapping.source_field;
+      delete out[key];
+    }
+
+    return out;
   }
 
   /** 반영하지 못한 값을 로그에 남긴다 (성공으로 묻히지 않도록) */
@@ -517,6 +719,11 @@ export class BidirectionalExecutor {
       this.logger.error(`${key}: Jira API 에러 상세 → ${JSON.stringify(result.details)}`);
     }
   }
+}
+
+/** 로그/오류 메시지에 쓰는 계층 이름 */
+function kindLabel(kind: IssueKind): string {
+  return kind === 'subtask' ? '하위 작업' : kind === 'epic' ? '에픽' : '일반';
 }
 
 /** 생성용 issuetype 캐시 초기화 */

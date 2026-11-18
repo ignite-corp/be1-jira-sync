@@ -36,6 +36,7 @@ import {
   findLinkedSourceKeys,
 } from './link-resolver';
 import { hasProjectLabel } from './project-label';
+import { classifyIssueKind } from './issue-type-resolver';
 import { getTargetStatusIdFromProfile } from './transition-helper';
 
 export { extractLinkFieldKeys, findBlocksOutwardKeys, findLinkedSourceKeys };
@@ -394,6 +395,11 @@ export class BidirectionalOrchestrator {
       plan.createInSource.push({ ticket: toRef(targetTicket), raw: targetTicket });
     }
 
+    // 하위 작업은 부모가 대상에 먼저 있어야 만들 수 있다.
+    // "전체 생성" 이 위에서부터 도는 것을 고려해 에픽 → 일반 → 하위작업 순으로 정렬해 둔다.
+    sortParentsFirst(plan.createInTarget);
+    sortParentsFirst(plan.createInSource);
+
     if (this.missingStatusMapping.size > 0) {
       this.logger.warning(
         `상태 매핑이 없는 소스 상태 ${this.missingStatusMapping.size}개는 상태 비교에서 제외했습니다 ` +
@@ -475,6 +481,10 @@ export class BidirectionalOrchestrator {
     sprintYearMonths: readonly string[]
   ): Promise<TicketComparison> {
     const mappings = await getFieldMappings(profileId);
+    // 하위 작업/에픽에는 스프린트 필드가 없다 - 비교에서 빼지 않으면 고칠 수 없는 diff 가 계속 뜬다
+    const skipSprint =
+      classifyIssueKind(sourceTicket.fields.issuetype) !== 'standard' ||
+      classifyIssueKind(targetTicket.fields.issuetype) !== 'standard';
     // 이름으로 해석하지 못해 빠진 값(스프린트/버전)을 로그로 드러낸다.
     // 경고를 안 받으면 매핑에서 조용히 빠진 값이 "대상에만 값이 있음" 으로 보여
     // 고칠 방법 없는 diff 가 계속 뜬다.
@@ -514,6 +524,7 @@ export class BidirectionalOrchestrator {
 
     return compareMappedFields(mappings, mappedSourceFields, targetTicket.fields, status, {
       sprintYearMonths,
+      skipSprint,
     });
   }
 
@@ -538,6 +549,15 @@ export class BidirectionalOrchestrator {
     }
     return extractLinkFieldKeys(sourceTicket, profile);
   }
+}
+
+/** 생성 순서: 에픽 → 일반 → 하위작업 (부모가 먼저 만들어지도록) */
+function sortParentsFirst(items: MissingItem[]): void {
+  const rank = (item: MissingItem) => {
+    const kind = classifyIssueKind(item.raw.fields.issuetype);
+    return kind === 'epic' ? 0 : kind === 'subtask' ? 2 : 1;
+  };
+  items.sort((a, b) => rank(a) - rank(b));
 }
 
 function toRef(ticket: JiraIssue): TicketRef {

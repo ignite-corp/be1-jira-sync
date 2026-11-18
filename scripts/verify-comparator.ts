@@ -24,7 +24,10 @@ import {
   findLinkedSourceKeys,
   extractLinkFieldKeys,
 } from '@/lib/services/sync/link-resolver';
-import { chooseCreateIssueType } from '@/lib/services/sync/issue-type-resolver';
+import {
+  chooseCreateIssueType,
+  classifyIssueKind,
+} from '@/lib/services/sync/issue-type-resolver';
 import { sanitizeWritePayload } from '@/lib/services/sync/write-payload';
 import { hasProjectLabel, withProjectLabel } from '@/lib/services/sync/project-label';
 
@@ -678,6 +681,91 @@ check(
   '지정 타입이 프로젝트에 없으면 선호 순서로 폴백',
   chooseCreateIssueType('KQ', [{ id: '7', name: '작업' }])?.reason,
   'preference'
+);
+
+// 하위 작업에는 스프린트 필드가 없어서 비교에서 빼야 한다 (고칠 수 없는 diff 방지)
+const subtaskSprintDiff = compareMappedFields(
+  MAPPINGS,
+  { customfield_10111: 3649 },
+  targetTicket({}).fields
+);
+check(
+  '하위 작업 아님: 스프린트 한쪽만 있으면 diff 로 잡힌다',
+  subtaskSprintDiff.changed.some((f) => f.label === '스프린트'),
+  true
+);
+check(
+  'skipSprint: 하위 작업/에픽은 스프린트를 비교하지 않는다',
+  compareMappedFields(MAPPINGS, { customfield_10111: 3649 }, targetTicket({}).fields, undefined, {
+    skipSprint: true,
+  }).fields.some((f) => f.label === '스프린트'),
+  false
+);
+
+// 계층 보존: 하위작업/에픽은 같은 계층으로 만든다 (일반 작업으로 떨어뜨리면 구조가 깨진다)
+const MEMBERSHIP_TYPES = [
+  { id: '20001', name: 'Dev Task' },
+  { id: '20002', name: 'Dev Sub-task', subtask: true },
+  { id: '20003', name: 'Epic', hierarchyLevel: 1 },
+  { id: '20004', name: 'Bug' },
+];
+
+check(
+  '계층 판정: subtask 플래그',
+  classifyIssueKind({ name: '하위 작업', subtask: true }),
+  'subtask'
+);
+check('계층 판정: hierarchyLevel 1 → 에픽', classifyIssueKind({ name: 'Epic', hierarchyLevel: 1 }), 'epic');
+check(
+  '계층 판정: hierarchyLevel -1 → 하위작업',
+  classifyIssueKind({ name: 'Dev Sub-task', hierarchyLevel: -1 }),
+  'subtask'
+);
+check('계층 판정: 플래그가 없으면 이름으로', classifyIssueKind({ name: '에픽' }), 'epic');
+check('계층 판정: 일반 작업', classifyIssueKind({ name: '작업', subtask: false }), 'standard');
+
+check(
+  'BEDEV1 하위작업 → MEMBERSHIP 은 Dev Sub-task',
+  chooseCreateIssueType('MEMBERSHIP', MEMBERSHIP_TYPES, 'subtask')?.name,
+  'Dev Sub-task'
+);
+check(
+  'MEMBERSHIP 하위작업 → 근거는 configured',
+  chooseCreateIssueType('MEMBERSHIP', MEMBERSHIP_TYPES, 'subtask')?.reason,
+  'configured'
+);
+check(
+  '에픽 → 에픽으로 (작업으로 떨어지지 않는다)',
+  chooseCreateIssueType('MEMBERSHIP', MEMBERSHIP_TYPES, 'epic')?.name,
+  'Epic'
+);
+check(
+  '일반 작업은 하위작업/에픽을 고르지 않는다',
+  chooseCreateIssueType('MEMBERSHIP', MEMBERSHIP_TYPES)?.name,
+  'Dev Task'
+);
+check(
+  '하위작업 타입이 하나뿐이면 이름이 달라도 그걸 쓴다',
+  chooseCreateIssueType('ANY', [
+    { id: '1', name: '작업' },
+    { id: '2', name: '세부 업무', subtask: true },
+  ], 'subtask')?.name,
+  '세부 업무'
+);
+check(
+  '하위작업 타입이 없으면 null (일반 작업으로 떨어뜨리지 않는다)',
+  chooseCreateIssueType('ANY', [{ id: '1', name: '작업' }], 'subtask'),
+  null
+);
+check(
+  '에픽 타입이 없으면 null',
+  chooseCreateIssueType('ANY', [{ id: '1', name: '작업' }], 'epic'),
+  null
+);
+check(
+  'BEDEV1 하위작업 → 하위 작업 (역방향)',
+  chooseCreateIssueType('BEDEV1', BEDEV1_TYPES, 'subtask')?.name,
+  '하위 작업'
 );
 
 // ---------------------------------------------------------------------------

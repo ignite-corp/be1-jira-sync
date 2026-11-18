@@ -48,6 +48,8 @@ export interface JiraIssueType {
   description: string;
   iconUrl: string;
   subtask: boolean;
+  /** 계층. -1 = 하위작업, 0 = 일반, 1 이상 = 에픽 (Jira 가 내려주지 않는 경우도 있다) */
+  hierarchyLevel?: number;
 }
 
 export interface JiraStatus {
