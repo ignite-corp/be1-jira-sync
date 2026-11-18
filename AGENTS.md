@@ -23,6 +23,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `lib/constants/jira.ts` 의 `FEHG`/`AUTOWAY` 상수와 `STATUS_MAPPING` 은 레거시 폴백이다.
 - **필드 id 는 프로젝트마다 다르다.** 예: 스프린트가 BEDEV1 에서는 `customfield_10020` 이지만 KQ 에서는 그 필드가 `null` 이다.
   대상 쪽 필드는 반드시 `sync_field_mappings.target_field` 를 거쳐 읽고 쓸 것.
+- **이름이 같은 필드가 수십 개다.** HMG 사이트 필드는 1072개고 "시작 날짜/Start date/Start Dateㅤㅤ" 처럼
+  (뒤에 공백이 붙은) 똑같아 보이는 이름이 흔하다. 엉뚱한 쪽에 매핑하면 **쓰기는 성공하고 화면만 비어 있어서**
+  "반영했다는데 안 된다" 가 된다. 근거는 두 가지뿐이다: `issue/{key}/editmeta`(그 화면에 실제로 있는 필드)와
+  `issue/{key}?expand=names`(그 티켓이 들고 있는 값). 판정은 `lib/services/jira/field-probe.ts`,
+  설정 화면의 "값 확인" 버튼과 `scripts/check-field-write.ts` 가 이걸 쓴다.
+  증상이 의심되면 대상 티켓 **변경 이력(changelog)** 을 먼저 볼 것 - 어느 필드에 들어갔는지 바로 나온다.
 - **티켓 연결 규칙 (연결 테이블 없음)**
   - 같은 Atlassian 사이트: `Blocks` 이슈 링크. 같은 링크가 **소스에서는 `outwardIssue`, 대상에서는 `inwardIssue`** 로
     양쪽에 보이므로 역방향 조회에 추가 API 호출이 필요 없다.
