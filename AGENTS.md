@@ -28,6 +28,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
     양쪽에 보이므로 역방향 조회에 추가 API 호출이 필요 없다.
   - 다른 사이트(HMG): 소스 티켓의 `link_field`(기본 `customfield_10438`)에 담긴 URL. **HMG 쪽에는 역참조가 없다.**
   - 판정 로직은 `lib/services/sync/link-resolver.ts` 에 순수 함수로 모여 있다.
+- **하위 작업은 스프린트 JQL 로 안 잡힌다.** 화면에는 부모의 스프린트가 보이지만 검색 색인에는 없다
+  (실측 2026-11: `key = BEDEV1-983 AND sprint = 3717` → 0건). 그래서 비교 조회는 스프린트 질의 뒤에
+  `parent IN (...)` 로 하위 작업을 한 번 더 가져온다. 또 하위 작업에는 프로젝트 라벨을 안 다는 것이 보통이라
+  라벨 판정도 **부모의 라벨**을 따른다. 둘 다 `bidirectional-orchestrator.ts` 에 있다.
 - 스프린트 이름은 `<접두사> YYYYMM` (예: `BEDEV1 202608`, `AUTOWAY` → `GW 202608`).
   접두사 예외는 `lib/services/sync/sprint-mapper.ts` 의 `SPRINT_PREFIX_MAP`.
 

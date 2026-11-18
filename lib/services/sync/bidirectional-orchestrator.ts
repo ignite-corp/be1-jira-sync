@@ -510,6 +510,12 @@ export class BidirectionalOrchestrator {
    * 스프린트(여러 개 가능) + 담당자 단위 티켓 조회.
    * 여러 달을 비교할 때도 질의는 한 번만 날린다 (sprint IN (...)).
    * 같은 티켓이 범위 안 두 스프린트에 걸쳐 있어도 Jira 가 한 번만 돌려준다.
+   *
+   * **하위 작업은 sprint JQL 로 잡히지 않는다.** (2026-11 실측)
+   * BEDEV1-983 은 필드상 `customfield_10020 = BEDEV1 202611` 로 보이지만
+   * `key = BEDEV1-983 AND sprint = 3717` 은 0건이다 - 화면에 보이는 스프린트 값은
+   * 부모에게서 물려받아 표시되는 것일 뿐 검색 색인에는 없다.
+   * 그래서 스프린트 조회 결과의 부모 키로 `parent IN (...)` 를 한 번 더 돌려 하위 작업을 더한다.
    */
   private async fetchSprintTickets(
     projectKey: string,
@@ -527,7 +533,72 @@ export class BidirectionalOrchestrator {
       throw new Error(`${projectKey} 스프린트 티켓 조회 실패: ${result.error ?? '알 수 없는 오류'}`);
     }
 
-    return result.data.issues;
+    const issues = result.data.issues;
+    const subtasks = await this.fetchSubtasksOfParents(
+      projectKey,
+      issues,
+      instance,
+      assigneeAccountId,
+      extraFields
+    );
+
+    if (subtasks.length > 0) {
+      this.logger.info(
+        `${projectKey}: 스프린트 티켓의 하위 작업 ${subtasks.length}건을 비교 대상에 포함했습니다`
+      );
+    }
+
+    return [...issues, ...subtasks];
+  }
+
+  /**
+   * 스프린트 안 티켓들의 하위 작업을 가져온다 (담당자 한정).
+   *
+   * 부모가 스프린트에 있으면 그 하위 작업도 같은 스프린트의 일로 본다.
+   * `parent IN (...)` 는 하위 작업이 아닌 자식(에픽 밑의 일반 작업)도 돌려주므로
+   * **하위 작업만 남긴다** - 그러지 않으면 스프린트 밖 티켓이 비교 범위에 섞인다.
+   */
+  private async fetchSubtasksOfParents(
+    projectKey: string,
+    sprintIssues: JiraIssue[],
+    instance: 'ignite' | 'hmg',
+    assigneeAccountId: string,
+    extraFields: string[]
+  ): Promise<JiraIssue[]> {
+    const seen = new Set(sprintIssues.map((t) => t.key));
+    // 하위 작업은 자식을 가질 수 없으므로 부모 후보에서 뺀다
+    const parentKeys = sprintIssues
+      .filter((t) => classifyIssueKind(t.fields.issuetype) !== 'subtask')
+      .map((t) => t.key);
+
+    if (parentKeys.length === 0) return [];
+
+    const found: JiraIssue[] = [];
+
+    // JQL 이 너무 길어지지 않도록 끊어서 조회한다
+    for (let i = 0; i < parentKeys.length; i += PARENT_QUERY_CHUNK) {
+      const chunk = parentKeys.slice(i, i + PARENT_QUERY_CHUNK);
+      const jql =
+        `project = ${projectKey} AND parent IN (${chunk.join(', ')}) ` +
+        `AND assignee = "${assigneeAccountId}" ORDER BY updated DESC`;
+
+      const result = await jira[instance].searchAllIssues(jql, extraFields);
+      if (!result.success || !result.data) {
+        this.logger.warning(
+          `${projectKey}: 하위 작업 조회 실패 - ${result.error ?? '알 수 없는 오류'}`
+        );
+        continue;
+      }
+
+      for (const issue of result.data.issues) {
+        if (seen.has(issue.key)) continue;
+        if (classifyIssueKind(issue.fields.issuetype) !== 'subtask') continue;
+        seen.add(issue.key);
+        found.push(issue);
+      }
+    }
+
+    return found;
   }
 
   /** 소스 티켓을 정방향 매핑에 통과시킨 뒤 대상의 실제 값과 비교 */
@@ -608,6 +679,9 @@ export class BidirectionalOrchestrator {
     return extractLinkFieldKeys(sourceTicket, profile);
   }
 }
+
+/** parent IN (...) 한 번에 넣는 부모 키 개수 (JQL 길이 제한 방어) */
+const PARENT_QUERY_CHUNK = 50;
 
 /** 생성 순서: 에픽 → 일반 → 하위작업 (부모가 먼저 만들어지도록) */
 function sortParentsFirst(items: MissingItem[]): void {
