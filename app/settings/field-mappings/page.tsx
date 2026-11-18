@@ -35,6 +35,11 @@ import { toast } from 'sonner';
 import { db } from '@/lib/db';
 import { jiraFetch } from '@/lib/jira-fetch';
 import { IGNITE_CUSTOM_FIELDS } from '@/lib/constants/jira';
+import {
+  buildFieldProbes,
+  normalizeIssueKey,
+  type FieldProbe,
+} from '@/lib/services/jira/field-probe';
 
 // ── 타입 ──
 
@@ -154,6 +159,24 @@ function TypeBadge({ type }: { type: string }) {
 
 // ── 선택형 필드 목록 (외부 컴포넌트) ──
 
+/**
+ * 샘플 티켓으로 필드를 식별하기 위한 UI 상태 묶음.
+ * 이름이 같은 필드가 수십 개라 이름만으로는 고를 수 없어서,
+ * 실제 티켓의 값과 편집 화면 포함 여부를 근거로 보여준다.
+ */
+interface ProbeUi {
+  inputKey: string;
+  onInputKeyChange: (v: string) => void;
+  onRun: () => void;
+  onClear: () => void;
+  loading: boolean;
+  error: string | null;
+  loadedKey: string | null;
+  probes: Record<string, FieldProbe> | null;
+  onlyWithValue: boolean;
+  onOnlyWithValueChange: (v: boolean) => void;
+}
+
 function SelectableFieldList({
   fields,
   isLoading,
@@ -164,6 +187,7 @@ function SelectableFieldList({
   onFieldClick,
   search,
   onSearchChange,
+  probe,
 }: {
   fields: JiraField[];
   isLoading: boolean;
@@ -174,14 +198,42 @@ function SelectableFieldList({
   onFieldClick: (field: JiraField) => void;
   search: string;
   onSearchChange: (v: string) => void;
+  probe?: ProbeUi;
 }) {
+  const probes = probe?.probes ?? null;
+
   const filtered = useMemo(() => {
-    if (!search.trim()) return fields;
-    const q = search.toLowerCase();
-    return fields.filter(
-      (f) => f.name.toLowerCase().includes(q) || f.id.toLowerCase().includes(q)
-    );
-  }, [fields, search]);
+    let list = fields;
+
+    const q = search.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (f) => f.name.toLowerCase().includes(q) || f.id.toLowerCase().includes(q)
+      );
+    }
+
+    if (probes && probe?.onlyWithValue) {
+      list = list.filter((f) => probes[f.id]?.hasValue);
+    }
+
+    if (probes) {
+      // 값이 있는 필드 → 편집 화면에 있는 필드 → 나머지
+      const rank = (f: JiraField) => {
+        const p = probes[f.id];
+        if (p?.hasValue) return 0;
+        if (p?.onEditScreen) return 1;
+        return 2;
+      };
+      list = [...list].sort((a, b) => rank(a) - rank(b));
+    }
+
+    return list;
+  }, [fields, search, probes, probe?.onlyWithValue]);
+
+  const valueCount = useMemo(
+    () => (probes ? fields.filter((f) => probes[f.id]?.hasValue).length : 0),
+    [fields, probes]
+  );
 
   const standardFields = filtered.filter((f) => !f.custom);
   const customFields = filtered.filter((f) => f.custom);
@@ -207,6 +259,7 @@ function SelectableFieldList({
   const FieldRow = ({ field }: { field: JiraField }) => {
     const state = getFieldState(field);
     const type = getFieldType(field);
+    const fieldProbe = probes?.[field.id];
 
     return (
       <button
@@ -222,9 +275,30 @@ function SelectableFieldList({
         }`}
         onClick={() => onFieldClick(field)}
         disabled={state === 'mapped' || state === 'disabled'}
-        title={`${field.id} — ${field.name} (${type})`}
+        title={[
+          `${field.id} — ${field.name} (${type})`,
+          fieldProbe?.screenName && fieldProbe.screenName !== field.name
+            ? `티켓 표시 이름: ${fieldProbe.screenName}`
+            : null,
+          fieldProbe?.preview ? `${probe?.loadedKey} 값: ${fieldProbe.preview}` : null,
+          fieldProbe?.onEditScreen ? '편집 화면에 있는 필드' : null,
+        ]
+          .filter(Boolean)
+          .join('\n')}
       >
         <span className="truncate flex-1 min-w-0">{field.name}</span>
+        {fieldProbe?.preview ? (
+          <span
+            className="shrink-0 max-w-[45%] truncate rounded bg-emerald-100 px-1 py-0.5 font-mono text-[10px] text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+            title={fieldProbe.preview}
+          >
+            {fieldProbe.preview}
+          </span>
+        ) : fieldProbe?.onEditScreen ? (
+          <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+            화면
+          </span>
+        ) : null}
         <TypeBadge type={type} />
       </button>
     );
@@ -244,6 +318,64 @@ function SelectableFieldList({
         onChange={(e) => onSearchChange(e.target.value)}
         className="h-7 text-xs"
       />
+
+      {/* 샘플 티켓으로 필드 식별 */}
+      {probe && (
+        <div className="space-y-1">
+          <div className="flex items-center gap-1">
+            <Input
+              placeholder="샘플 티켓 키 (예: BEDEV1-983)"
+              value={probe.inputKey}
+              onChange={(e) => probe.onInputKeyChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  probe.onRun();
+                }
+              }}
+              className="h-7 text-xs"
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 shrink-0 px-2 text-xs"
+              onClick={probe.onRun}
+              disabled={probe.loading || !probe.inputKey.trim()}
+            >
+              {probe.loading ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                '값 확인'
+              )}
+            </Button>
+          </div>
+
+          {probe.error && (
+            <p className="text-[10px] text-red-500">{probe.error}</p>
+          )}
+
+          {probe.loadedKey && !probe.error && (
+            <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+              <label className="flex cursor-pointer items-center gap-1">
+                <input
+                  type="checkbox"
+                  className="h-3 w-3"
+                  checked={probe.onlyWithValue}
+                  onChange={(e) => probe.onOnlyWithValueChange(e.target.checked)}
+                />
+                {probe.loadedKey} 에 값이 있는 필드만 ({valueCount})
+              </label>
+              <button
+                type="button"
+                className="underline hover:text-foreground"
+                onClick={probe.onClear}
+              >
+                해제
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 표준 필드 */}
       <div className="border rounded-md overflow-hidden">
@@ -310,6 +442,20 @@ export default function FieldMappingsPage() {
   // 필드 검색
   const [sourceSearch, setSourceSearch] = useState('');
   const [targetSearch, setTargetSearch] = useState('');
+
+  // 샘플 티켓으로 필드 식별 (이름이 같은 필드가 많아 값으로 구분한다)
+  const [sourceProbeKey, setSourceProbeKey] = useState('');
+  const [targetProbeKey, setTargetProbeKey] = useState('');
+  const [sourceProbes, setSourceProbes] = useState<Record<string, FieldProbe> | null>(null);
+  const [targetProbes, setTargetProbes] = useState<Record<string, FieldProbe> | null>(null);
+  const [sourceProbeLoadedKey, setSourceProbeLoadedKey] = useState<string | null>(null);
+  const [targetProbeLoadedKey, setTargetProbeLoadedKey] = useState<string | null>(null);
+  const [sourceProbeLoading, setSourceProbeLoading] = useState(false);
+  const [targetProbeLoading, setTargetProbeLoading] = useState(false);
+  const [sourceProbeError, setSourceProbeError] = useState<string | null>(null);
+  const [targetProbeError, setTargetProbeError] = useState<string | null>(null);
+  const [sourceProbeOnlyValue, setSourceProbeOnlyValue] = useState(false);
+  const [targetProbeOnlyValue, setTargetProbeOnlyValue] = useState(false);
 
   // HMG 대상 설정
   const [linkField, setLinkField] = useState('');
@@ -442,8 +588,90 @@ export default function FieldMappingsPage() {
     }
   };
 
+  /**
+   * 샘플 티켓 하나를 읽어서 "어떤 필드가 화면의 그 값을 들고 있는지" 를 알아낸다.
+   * - issue?expand=names : 실제 값 + 티켓에서의 표시 이름
+   * - issue/{key}/editmeta : 그 프로젝트 편집 화면에 올라와 있는 필드 (권한 없으면 생략)
+   */
+  const runFieldProbe = async (
+    instance: 'ignite' | 'hmg' | undefined,
+    rawKey: string,
+    setters: {
+      setLoading: (v: boolean) => void;
+      setError: (v: string | null) => void;
+      setProbes: (v: Record<string, FieldProbe> | null) => void;
+      setLoadedKey: (v: string | null) => void;
+    }
+  ) => {
+    const { setLoading, setError, setProbes, setLoadedKey } = setters;
+
+    if (!instance) {
+      setError('프로젝트를 먼저 선택하세요.');
+      return;
+    }
+    const issueKey = normalizeIssueKey(rawKey);
+    if (!issueKey) {
+      setError('티켓 키 형식이 아닙니다. 예: BEDEV1-983');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      const [issueRes, metaRes] = await Promise.all([
+        jiraFetch(`/api/jira/${instance}/issue/${issueKey}?expand=names`),
+        jiraFetch(`/api/jira/${instance}/issue/${issueKey}/editmeta`),
+      ]);
+      const issueJson = await issueRes.json();
+      if (!issueJson.success || !issueJson.data) {
+        setProbes(null);
+        setLoadedKey(null);
+        setError(issueJson.error || `${issueKey} 티켓을 읽지 못했습니다.`);
+        return;
+      }
+
+      // editmeta 는 권한에 따라 실패할 수 있다 - 실패해도 값 비교는 그대로 쓴다
+      let metaJson: { success?: boolean; data?: unknown } = {};
+      try {
+        metaJson = await metaRes.json();
+      } catch {
+        metaJson = {};
+      }
+
+      const probes = buildFieldProbes({
+        issue: issueJson.data,
+        editmeta: metaJson.success
+          ? (metaJson.data as { fields?: Record<string, unknown> })
+          : null,
+      });
+      setProbes(probes);
+      setLoadedKey(issueKey);
+    } catch (e) {
+      setProbes(null);
+      setLoadedKey(null);
+      setError(e instanceof Error ? e.message : '티켓 조회에 실패했습니다.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const clearSourceProbe = () => {
+    setSourceProbes(null);
+    setSourceProbeLoadedKey(null);
+    setSourceProbeError(null);
+    setSourceProbeOnlyValue(false);
+  };
+
+  const clearTargetProbe = () => {
+    setTargetProbes(null);
+    setTargetProbeLoadedKey(null);
+    setTargetProbeError(null);
+    setTargetProbeOnlyValue(false);
+  };
+
   const handleSourceSelect = (projectId: string) => {
     setSourceProjectId(projectId);
+    clearSourceProbe();
     setSourceFields([]);
     setSourceStatuses([]);
     setSelectedSourceField(null);
@@ -460,6 +688,7 @@ export default function FieldMappingsPage() {
 
   const handleTargetSelect = (projectId: string) => {
     setTargetProjectId(projectId);
+    clearTargetProbe();
     setTargetFields([]);
     setTargetStatuses([]);
     setSelectedSourceField(null);
@@ -1216,6 +1445,9 @@ export default function FieldMappingsPage() {
           <div className="text-xs text-muted-foreground bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900 rounded-md px-3 py-2 ml-7">
             왼쪽(소스)에서 필드를 선택하면 오른쪽(대상)에서 호환 가능한 필드만 활성화됩니다.
             양쪽 모두 선택 후 &quot;매핑 추가&quot; 버튼을 눌러주세요.
+            <br />
+            이름이 비슷한 필드가 많을 때는 <strong>샘플 티켓 키</strong>를 넣고 &quot;값 확인&quot;을 누르세요.
+            그 티켓에서 실제로 값을 가진 필드에 값이 표시되고, 편집 화면에 있는 필드에는 &quot;화면&quot; 표시가 붙습니다.
           </div>
 
           {/* 필드 선택 + 추가 버튼 */}
@@ -1230,6 +1462,28 @@ export default function FieldMappingsPage() {
               onFieldClick={handleSourceFieldClick}
               search={sourceSearch}
               onSearchChange={setSourceSearch}
+              probe={{
+                inputKey: sourceProbeKey,
+                onInputKeyChange: setSourceProbeKey,
+                onRun: () =>
+                  runFieldProbe(
+                    projects.find((p) => p.id === sourceProjectId)?.jiraInstance,
+                    sourceProbeKey,
+                    {
+                      setLoading: setSourceProbeLoading,
+                      setError: setSourceProbeError,
+                      setProbes: setSourceProbes,
+                      setLoadedKey: setSourceProbeLoadedKey,
+                    }
+                  ),
+                onClear: clearSourceProbe,
+                loading: sourceProbeLoading,
+                error: sourceProbeError,
+                loadedKey: sourceProbeLoadedKey,
+                probes: sourceProbes,
+                onlyWithValue: sourceProbeOnlyValue,
+                onOnlyWithValueChange: setSourceProbeOnlyValue,
+              }}
             />
 
             <div className="flex flex-col items-center gap-2 pt-20">
@@ -1260,6 +1514,28 @@ export default function FieldMappingsPage() {
               onFieldClick={handleTargetFieldClick}
               search={targetSearch}
               onSearchChange={setTargetSearch}
+              probe={{
+                inputKey: targetProbeKey,
+                onInputKeyChange: setTargetProbeKey,
+                onRun: () =>
+                  runFieldProbe(
+                    projects.find((p) => p.id === targetProjectId)?.jiraInstance,
+                    targetProbeKey,
+                    {
+                      setLoading: setTargetProbeLoading,
+                      setError: setTargetProbeError,
+                      setProbes: setTargetProbes,
+                      setLoadedKey: setTargetProbeLoadedKey,
+                    }
+                  ),
+                onClear: clearTargetProbe,
+                loading: targetProbeLoading,
+                error: targetProbeError,
+                loadedKey: targetProbeLoadedKey,
+                probes: targetProbes,
+                onlyWithValue: targetProbeOnlyValue,
+                onOnlyWithValueChange: setTargetProbeOnlyValue,
+              }}
             />
           </div>
 

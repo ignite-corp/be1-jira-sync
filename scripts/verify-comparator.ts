@@ -12,6 +12,11 @@
  */
 
 import type { JiraIssue } from '@/lib/types/jira';
+import {
+  buildFieldProbes,
+  formatFieldValue,
+  normalizeIssueKey,
+} from '../lib/services/jira/field-probe';
 import type { DbFieldMapping } from '@/lib/services/sync/db-field-mapper';
 import { compareMappedFields, suggestDirection } from '@/lib/services/sync/ticket-comparator';
 import {
@@ -932,6 +937,37 @@ const mixed = compareMappedFields(
   { mappedSourceStatusId: '1', sourceStatusName: '해야 할 일', targetStatusId: '6', targetStatusName: '완료' }
 );
 check('상태 + 필드가 함께 잡힌다', mixed.changed.map((d) => d.label).sort(), ['상태', '요약']);
+
+// ── 샘플 티켓으로 필드 식별 (field-probe) ──
+
+check('빈 값은 null (= 이 티켓에서 안 쓰는 필드)', formatFieldValue(''), null);
+check('빈 배열도 null', formatFieldValue([]), null);
+check('날짜 문자열은 그대로', formatFieldValue('2026-11-18'), '2026-11-18');
+check('숫자도 보인다', formatFieldValue(0), '0');
+check('옵션 객체는 value', formatFieldValue({ self: 'x', value: '높음' }), '높음');
+check('사용자 객체는 displayName', formatFieldValue({ displayName: '정용석', name: 'ys' }), '정용석');
+check('ADF 본문은 텍스트만', formatFieldValue({ type: 'doc', content: [{ type: 'text', text: '설명' }] }), '설명');
+check('배열은 이름들을 합친다', formatFieldValue([{ name: 'a' }, { name: 'b' }]), 'a, b');
+
+const probes = buildFieldProbes({
+  issue: {
+    names: { customfield_1: '시작 날짜', customfield_2: '시작 날짜' },
+    fields: { customfield_1: '2026-11-18', customfield_2: null },
+  },
+  editmeta: { fields: { customfield_2: {} } },
+});
+check('값이 있는 쪽을 값으로 구분한다', probes.customfield_1.hasValue, true);
+check('값 미리보기', probes.customfield_1.preview, '2026-11-18');
+check('값이 없으면 hasValue false', probes.customfield_2.hasValue, false);
+check('편집 화면 포함 여부가 따로 표시된다', probes.customfield_2.onEditScreen, true);
+check('티켓에만 있는 필드는 화면 밖', probes.customfield_1.onEditScreen, false);
+check('표시 이름을 가져온다', probes.customfield_2.screenName, '시작 날짜');
+
+check('editmeta 가 없어도 동작한다', Object.keys(buildFieldProbes({ issue: { fields: { a: '1' } } })).length, 1);
+
+check('티켓 키 정규화', normalizeIssueKey(' bedev1-983 '), 'BEDEV1-983');
+check('브라우저 URL 도 받아준다', normalizeIssueKey('https://ignitecorp.atlassian.net/browse/BEDEV1-983'), 'BEDEV1-983');
+check('형식이 아니면 null', normalizeIssueKey('시작 날짜'), null);
 
 // ---------------------------------------------------------------------------
 
